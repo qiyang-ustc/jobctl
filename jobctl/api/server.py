@@ -1,0 +1,716 @@
+"""FastAPI daemon: REST endpoints + monitor startup.
+
+Endpoints:
+    GET  /health
+    POST /jobfiles              — register a JobFile from a path
+    GET  /jobfiles              — list registered JobFiles
+    POST /runs                  — submit a run (attaches memory hint, selects backend)
+    GET  /runs                  — list runs (filter: state, jobfile_id)
+    GET  /runs/{id}             — get a run
+    POST /runs/{id}/cancel      — cancel a run
+    POST /runs/{id}/rerun       — rerun (copy params -> new run)
+    GET  /runs/{id}/logs        — tail stdout or stderr
+    GET  /runs/{id}/artifacts   — list artifacts for a run
+    GET  /servers               — list server health rows
+    POST /runs/{id}/feedback    — submit user feedback for a run
+    GET  /runs/{id}/feedback    — list feedback for a run
+    GET  /expect                — list expectation contracts (?jobfile_id=)
+    POST /expect/confirm        — confirm a criterion
+    POST /expect/propose        — propose new criteria from feedback
+    GET  /memory/query          — query run memory
+
+Usage:
+    app = create_app(config={...}, start_monitor=True)
+    # or
+    uvicorn.run("jobctl.api.server:create_app", factory=True, ...)
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from contextlib import asynccontextmanager
+
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
+from fastapi.responses import PlainTextResponse
+
+import jobctl
+
+logger = logging.getLogger(__name__)
+
+_TERMINAL_STATES = {"completed", "failed", "cancelled", "stuck", "timeout"}
+
+
+# ---------------------------------------------------------------------------
+# App factory
+# ---------------------------------------------------------------------------
+
+def create_app(config: dict | None = None, start_monitor: bool = True) -> FastAPI:
+    """Create and configure the FastAPI application.
+
+    Args:
+        config:        Configuration dict.  Defaults to empty dict (uses Store
+                       defaults + env).
+        start_monitor: If True, start the Monitor asyncio loop on startup and
+                       stop it on shutdown.
+
+    Returns:
+        Configured FastAPI application.
+    """
+    if config is None:
+        config = {}
+
+    # Resolve DB and run paths
+    db_path = config.get("db_path") or os.path.expanduser("~/.jobctl/jobctl.db")
+    run_dir = config.get("run_dir") or os.path.expanduser("~/.jobctl/runs")
+
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(run_dir).mkdir(parents=True, exist_ok=True)
+
+    from jobctl.db.store import Store
+    from jobctl.analysis.base import get_analyzer
+    from jobctl.notify.notify import get_notifiers
+    from jobctl.monitor.monitor import Monitor
+
+    store = Store(db_path)
+    store.init_schema()
+
+    analyzer = get_analyzer(config)
+
+    def notifiers_factory(run):
+        return get_notifiers(config, run)
+
+    monitor_config = {
+        **config,
+        "poll_interval_seconds": config.get("poll_interval_seconds", 10.0),
+        "probe_interval_seconds": config.get("probe_interval_seconds", 60.0),
+        "stuck_timeout_seconds": config.get("stuck_timeout_seconds", 600.0),
+    }
+    monitor = Monitor(
+        store=store,
+        config=monitor_config,
+        analyzer=analyzer,
+        notifiers_factory=notifiers_factory,
+    )
+
+    if start_monitor:
+        @asynccontextmanager
+        async def _lifespan(application: FastAPI):
+            stop_event = asyncio.Event()
+            task = asyncio.create_task(monitor.run_loop(stop_event))
+            logger.info("Monitor started")
+            try:
+                yield
+            finally:
+                stop_event.set()
+                try:
+                    await asyncio.wait_for(task, timeout=2.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
+                logger.info("Monitor stopped")
+
+        app = FastAPI(title="jobctl", version=jobctl.__version__, lifespan=_lifespan)
+    else:
+        app = FastAPI(title="jobctl", version=jobctl.__version__)
+
+    # Store shared state on app
+    app.state.store = store
+    app.state.config = config
+    app.state.analyzer = analyzer
+    app.state.monitor = monitor
+    app.state.run_dir = run_dir
+
+    # ------------------------------------------------------------------
+    # Register routes
+    # ------------------------------------------------------------------
+    _register_routes(app)
+
+    return app
+
+
+# ---------------------------------------------------------------------------
+# Route registration
+# ---------------------------------------------------------------------------
+
+def _register_routes(app: FastAPI) -> None:
+    """Attach all API routes to *app*."""
+
+    def _store(request: Request):
+        return request.app.state.store
+
+    def _config(request: Request):
+        return request.app.state.config
+
+    def _analyzer(request: Request):
+        return request.app.state.analyzer
+
+    def _monitor(request: Request):
+        return request.app.state.monitor
+
+    # ------------------------------------------------------------------
+    # /health
+    # ------------------------------------------------------------------
+
+    @app.get("/health")
+    async def health():
+        return {"status": "ok", "version": jobctl.__version__}
+
+    # ------------------------------------------------------------------
+    # /jobfiles
+    # ------------------------------------------------------------------
+
+    @app.post("/jobfiles")
+    async def register_jobfile(body: dict, request: Request):
+        """Register a JobFile from a file path."""
+        from jobctl.jobfile import load_jobfile, content_hash as calc_hash
+
+        path = body.get("path", "")
+        if not path:
+            raise HTTPException(status_code=422, detail="'path' is required")
+
+        if not Path(path).exists():
+            raise HTTPException(status_code=400, detail=f"File not found: {path}")
+
+        try:
+            jf = load_jobfile(path)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+        store = _store(request)
+
+        # Check if already registered by name
+        existing = store.get_jobfile_by_name(jf.name)
+        if existing is not None:
+            # Re-register: check hash. If same, return existing; if different, bump version.
+            if existing.content_hash == jf.content_hash:
+                return _jobfile_to_dict(existing)
+            # Update the existing record's version + hash
+            store.bump_version(existing.id, jf.content_hash)
+            updated = store.get_jobfile(existing.id)
+            return _jobfile_to_dict(updated)
+
+        store.add_jobfile(jf)
+        return _jobfile_to_dict(jf)
+
+    @app.get("/jobfiles")
+    async def list_jobfiles(request: Request):
+        store = _store(request)
+        return [_jobfile_to_dict(jf) for jf in store.list_jobfiles()]
+
+    # ------------------------------------------------------------------
+    # /runs
+    # ------------------------------------------------------------------
+
+    @app.post("/runs")
+    async def submit_run(body: dict, request: Request):
+        """Submit a new run.
+
+        Body:
+            jobfile_id (str, optional)
+            jobfile_name (str, optional)
+            params (dict, optional)
+            backend_override (dict, optional) — {backend, server, task}
+        """
+        from jobctl.jobfile import resolve_params, render_command, input_hashes as calc_input_hashes
+        from jobctl.backends.base import select_backend, get_backend
+        from jobctl.memory.memory import query as mem_query
+        from jobctl.db.models import Run, State, Health
+
+        store = _store(request)
+        cfg = _config(request)
+
+        # Resolve jobfile
+        jf = None
+        if body.get("jobfile_id"):
+            jf = store.get_jobfile(body["jobfile_id"])
+        elif body.get("jobfile_name"):
+            jf = store.get_jobfile_by_name(body["jobfile_name"])
+
+        if jf is None:
+            raise HTTPException(status_code=404, detail="JobFile not found")
+
+        # Resolve params
+        params = body.get("params") or {}
+        try:
+            resolved_params = resolve_params(jf, params)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+
+        # Compute input hashes
+        try:
+            ihashes = calc_input_hashes(jf, resolved_params)
+        except Exception:
+            ihashes = {}
+
+        # Memory hint
+        memory_hint = mem_query(
+            store,
+            jobfile_id=jf.id,
+            params=resolved_params,
+            input_hashes=ihashes,
+        )
+
+        # Select backend
+        servers = store.list_servers()
+        backend_override = body.get("backend_override")
+        backend_name, server_name, task_name = select_backend(
+            jf, servers, override=backend_override
+        )
+
+        now = datetime.now(timezone.utc).isoformat()
+        run_id = f"run-{uuid.uuid4().hex[:12]}"
+
+        run = Run(
+            run_id=run_id,
+            jobfile_id=jf.id,
+            jobfile_version=jf.version,
+            params=resolved_params,
+            input_hashes=ihashes,
+            backend=backend_name,
+            server=server_name,
+            task=task_name,
+            remote_job_id=None,
+            state=State.PENDING,
+            health=Health.OK,
+            exit_code=None,
+            submitted_at=now,
+            started_at=None,
+            finished_at=None,
+            last_heartbeat=None,
+            workdir=None,
+            stdout_path=None,
+            stderr_path=None,
+            resource_summary={},
+            expectation_match=None,
+            observation_card=None,
+        )
+        store.add_run(run)
+
+        # Submit to backend immediately
+        try:
+            backend = get_backend(backend_name, server_name, cfg)
+            submit_result = backend.submit(run, jf)
+            store.update_run(
+                run_id,
+                state=State.SUBMITTED,
+                remote_job_id=submit_result.remote_job_id,
+                workdir=submit_result.workdir,
+            )
+            # Update in-memory monitor's backend cache for this run
+            monitor = _monitor(request)
+            monitor._backends[run_id] = backend
+        except Exception as exc:
+            logger.exception("Backend submit failed for run=%s: %s", run_id, exc)
+            from jobctl.db.models import State
+            store.update_run(run_id, state=State.FAILED)
+
+        run = store.get_run(run_id)
+        result = _run_to_dict(run)
+        result["memory_hint"] = memory_hint
+        return result
+
+    @app.get("/runs")
+    async def list_runs(
+        request: Request,
+        state: str | None = Query(default=None),
+        jobfile_id: str | None = Query(default=None),
+    ):
+        from jobctl.db.models import State as StateEnum
+        store = _store(request)
+        state_filter = StateEnum(state) if state else None
+        runs = store.list_runs(state=state_filter, jobfile_id=jobfile_id)
+        return [_run_to_dict(r) for r in runs]
+
+    @app.get("/runs/{run_id}")
+    async def get_run(run_id: str, request: Request):
+        store = _store(request)
+        run = store.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return _run_to_dict(run)
+
+    @app.post("/runs/{run_id}/cancel")
+    async def cancel_run(run_id: str, request: Request):
+        from jobctl.db.models import State
+        from jobctl.backends.base import get_backend
+
+        store = _store(request)
+        cfg = _config(request)
+        monitor = _monitor(request)
+
+        run = store.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        # Try backend cancel
+        try:
+            backend = (
+                monitor._backends.get(run_id)
+                or get_backend(run.backend or "local", run.server, cfg)
+            )
+            backend.cancel(run)
+        except Exception as exc:
+            logger.warning("cancel_run: backend cancel failed: %s", exc)
+
+        store.update_run(run_id, state=State.CANCELLED)
+        run = store.get_run(run_id)
+        return _run_to_dict(run)
+
+    @app.post("/runs/{run_id}/rerun")
+    async def rerun(run_id: str, request: Request):
+        from jobctl.jobfile import render_command, input_hashes as calc_input_hashes
+        from jobctl.backends.base import select_backend, get_backend
+        from jobctl.db.models import Run, State, Health
+        from jobctl.memory.memory import query as mem_query
+
+        store = _store(request)
+        cfg = _config(request)
+
+        orig = store.get_run(run_id)
+        if orig is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        jf = store.get_jobfile(orig.jobfile_id)
+        if jf is None:
+            raise HTTPException(status_code=404, detail="JobFile not found")
+
+        now = datetime.now(timezone.utc).isoformat()
+        new_run_id = f"run-{uuid.uuid4().hex[:12]}"
+
+        servers = store.list_servers()
+        backend_name, server_name, task_name = select_backend(jf, servers, override=None)
+
+        new_run = Run(
+            run_id=new_run_id,
+            jobfile_id=jf.id,
+            jobfile_version=jf.version,
+            params=orig.params,
+            input_hashes=orig.input_hashes,
+            backend=backend_name,
+            server=server_name,
+            task=task_name,
+            remote_job_id=None,
+            state=State.PENDING,
+            health=Health.OK,
+            exit_code=None,
+            submitted_at=now,
+            started_at=None,
+            finished_at=None,
+            last_heartbeat=None,
+            workdir=None,
+            stdout_path=None,
+            stderr_path=None,
+            resource_summary={},
+            expectation_match=None,
+            observation_card=None,
+        )
+        store.add_run(new_run)
+
+        try:
+            backend = get_backend(backend_name, server_name, cfg)
+            submit_result = backend.submit(new_run, jf)
+            store.update_run(
+                new_run_id,
+                state=State.SUBMITTED,
+                remote_job_id=submit_result.remote_job_id,
+                workdir=submit_result.workdir,
+            )
+            monitor = _monitor(request)
+            monitor._backends[new_run_id] = backend
+        except Exception as exc:
+            logger.exception("rerun: backend submit failed: %s", exc)
+            store.update_run(new_run_id, state=State.FAILED)
+
+        new_run = store.get_run(new_run_id)
+        return _run_to_dict(new_run)
+
+    @app.get("/runs/{run_id}/logs", response_class=PlainTextResponse)
+    async def get_logs(
+        run_id: str,
+        request: Request,
+        stream: str = Query(default="stdout"),
+        tail: int = Query(default=200),
+    ):
+        store = _store(request)
+        run = store.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        path = run.stdout_path if stream == "stdout" else run.stderr_path
+
+        if path is None or not Path(path).exists():
+            return PlainTextResponse("")
+
+        try:
+            text = Path(path).read_text(errors="replace")
+            # Return last `tail` lines
+            lines = text.splitlines()
+            return PlainTextResponse("\n".join(lines[-tail:]))
+        except OSError:
+            return PlainTextResponse("")
+
+    @app.get("/runs/{run_id}/artifacts")
+    async def list_artifacts(run_id: str, request: Request):
+        store = _store(request)
+        run = store.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        arts = store.list_artifacts(run_id)
+        return [_artifact_to_dict(a) for a in arts]
+
+    # ------------------------------------------------------------------
+    # /servers
+    # ------------------------------------------------------------------
+
+    @app.get("/servers")
+    async def list_servers(request: Request):
+        store = _store(request)
+        return [_server_to_dict(s) for s in store.list_servers()]
+
+    # ------------------------------------------------------------------
+    # /feedback
+    # ------------------------------------------------------------------
+
+    @app.post("/runs/{run_id}/feedback")
+    async def post_feedback(run_id: str, body: dict, request: Request):
+        from jobctl.db.models import Feedback
+
+        store = _store(request)
+        run = store.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        now = datetime.now(timezone.utc).isoformat()
+        fb = Feedback(
+            id=f"fb-{uuid.uuid4().hex[:12]}",
+            run_id=run_id,
+            kind=body.get("kind", "note"),
+            text=body.get("text", ""),
+            created_at=now,
+        )
+        store.add_feedback(fb)
+        return _feedback_to_dict(fb)
+
+    @app.get("/runs/{run_id}/feedback")
+    async def get_feedback(run_id: str, request: Request):
+        store = _store(request)
+        run = store.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return [_feedback_to_dict(fb) for fb in store.list_feedback(run_id)]
+
+    # ------------------------------------------------------------------
+    # /expect
+    # ------------------------------------------------------------------
+
+    @app.get("/expect")
+    async def list_contracts(
+        request: Request,
+        jobfile_id: str | None = Query(default=None),
+    ):
+        store = _store(request)
+        if jobfile_id:
+            contract = store.get_contract(jobfile_id)
+            if contract is None:
+                return []
+            return [_contract_to_dict(contract)]
+        # No filter — return all contracts for all jobfiles
+        jfs = store.list_jobfiles()
+        result = []
+        for jf in jfs:
+            c = store.get_contract(jf.id)
+            if c is not None:
+                result.append(_contract_to_dict(c))
+        return result
+
+    @app.post("/expect/confirm")
+    async def confirm_criterion(body: dict, request: Request):
+        from jobctl.expectations.distiller import confirm
+
+        store = _store(request)
+        crit_id = body.get("criterion_id", "")
+        try:
+            criterion = confirm(store, crit_id)
+        except (KeyError, ValueError):
+            raise HTTPException(status_code=404, detail="Criterion not found")
+        return {
+            "id": criterion.id,
+            "text": criterion.text,
+            "status": criterion.status,
+            "strength": criterion.strength,
+        }
+
+    @app.post("/expect/propose")
+    async def propose_criteria(body: dict, request: Request):
+        from jobctl.expectations.distiller import propose
+        from jobctl.db.models import Feedback
+
+        store = _store(request)
+        analyzer = _analyzer(request)
+
+        run_id = body.get("run_id", "")
+        feedback_text = body.get("feedback_text", "")
+
+        run = store.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        # Build a minimal feedback object for the distiller
+        now = datetime.now(timezone.utc).isoformat()
+        fb = Feedback(
+            id=f"fb-{uuid.uuid4().hex[:12]}",
+            run_id=run_id,
+            kind="propose",
+            text=feedback_text,
+            created_at=now,
+        )
+
+        try:
+            criteria = propose(store, run, fb, analyzer)
+        except Exception as exc:
+            logger.warning("propose_criteria failed: %s", exc)
+            criteria = []
+
+        return [
+            {
+                "id": c.id,
+                "text": c.text,
+                "kind": c.kind,
+                "status": c.status,
+                "strength": c.strength,
+            }
+            for c in criteria
+        ]
+
+    # ------------------------------------------------------------------
+    # /memory/query
+    # ------------------------------------------------------------------
+
+    @app.get("/memory/query")
+    async def memory_query(
+        request: Request,
+        jobfile_id: str | None = Query(default=None),
+        name: str | None = Query(default=None),
+    ):
+        from jobctl.memory.memory import query
+
+        store = _store(request)
+        return query(store, jobfile_id=jobfile_id, name=name)
+
+
+# ---------------------------------------------------------------------------
+# Serialisation helpers
+# ---------------------------------------------------------------------------
+
+def _jobfile_to_dict(jf) -> dict:
+    return {
+        "id": jf.id,
+        "name": jf.name,
+        "version": jf.version,
+        "source_path": jf.source_path,
+        "command_template": jf.command_template,
+        "params_schema": jf.params_schema,
+        "backend_prefs": jf.backend_prefs,
+        "artifact_patterns": jf.artifact_patterns,
+        "expectation_contract_id": jf.expectation_contract_id,
+        "content_hash": jf.content_hash,
+        "created_at": jf.created_at,
+    }
+
+
+def _run_to_dict(run) -> dict:
+    return {
+        "run_id": run.run_id,
+        "jobfile_id": run.jobfile_id,
+        "jobfile_version": run.jobfile_version,
+        "params": run.params,
+        "input_hashes": run.input_hashes,
+        "backend": run.backend,
+        "server": run.server,
+        "task": run.task,
+        "remote_job_id": run.remote_job_id,
+        "state": run.state.value if hasattr(run.state, "value") else run.state,
+        "health": run.health.value if hasattr(run.health, "value") else run.health,
+        "exit_code": run.exit_code,
+        "submitted_at": run.submitted_at,
+        "started_at": run.started_at,
+        "finished_at": run.finished_at,
+        "last_heartbeat": run.last_heartbeat,
+        "workdir": run.workdir,
+        "stdout_path": run.stdout_path,
+        "stderr_path": run.stderr_path,
+        "resource_summary": run.resource_summary,
+        "expectation_match": (
+            run.expectation_match.value
+            if hasattr(run.expectation_match, "value")
+            else run.expectation_match
+        ),
+        "observation_card": run.observation_card,
+    }
+
+
+def _artifact_to_dict(art) -> dict:
+    return {
+        "id": art.id,
+        "run_id": art.run_id,
+        "remote_path": art.remote_path,
+        "local_path": art.local_path,
+        "type": art.type.value if hasattr(art.type, "value") else art.type,
+        "size": art.size,
+        "checksum": art.checksum,
+        "preview": art.preview,
+        "created_at": art.created_at,
+    }
+
+
+def _server_to_dict(s) -> dict:
+    return {
+        "name": s.name,
+        "backend_type": s.backend_type,
+        "online": s.online,
+        "last_heartbeat": s.last_heartbeat,
+        "cpu": s.cpu,
+        "mem": s.mem,
+        "gpu": s.gpu,
+        "disk": s.disk,
+        "slurm_queue": s.slurm_queue,
+        "note": s.note,
+    }
+
+
+def _feedback_to_dict(fb) -> dict:
+    return {
+        "id": fb.id,
+        "run_id": fb.run_id,
+        "kind": fb.kind,
+        "text": fb.text,
+        "created_at": fb.created_at,
+    }
+
+
+def _contract_to_dict(c) -> dict:
+    return {
+        "id": c.id,
+        "jobfile_id": c.jobfile_id,
+        "version": c.version,
+        "criteria": [
+            {
+                "id": cr.id,
+                "text": cr.text,
+                "kind": cr.kind,
+                "check": cr.check,
+                "status": cr.status,
+                "strength": cr.strength,
+                "evidence_run_ids": cr.evidence_run_ids,
+            }
+            for cr in c.criteria
+        ],
+        "source": c.source,
+        "created_at": c.created_at,
+        "updated_at": c.updated_at,
+    }
