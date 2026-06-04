@@ -6,3 +6,6 @@ venv/
 .jobctl/
 runs/
 .env
+jobctl-*.png
+.playwright-mcp/
+*.png
