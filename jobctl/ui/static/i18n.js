@@ -43,6 +43,7 @@ const I18N = {
     "label.submitted": "Submitted",
     "label.finished":  "Finished",
     "label.params":    "Parameters",
+    "label.slurm":     "SLURM submission",
     "label.resources": "Resources",
 
     /* log section */
@@ -144,6 +145,7 @@ const I18N = {
     "label.submitted": "提交时间",
     "label.finished":  "完成时间",
     "label.params":    "参数",
+    "label.slurm":     "SLURM 提交参数",
     "label.resources": "资源",
 
     /* log section */

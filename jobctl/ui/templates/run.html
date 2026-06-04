@@ -77,6 +77,17 @@
         {% endfor %}
       </div>
     </div>
+    {% if run.slurm_request %}
+    <div class="card mb-2">
+      <h3 data-i18n="label.slurm">SLURM submission</h3>
+      <div class="kv-grid mt-1">
+        {% for k, v in run.slurm_request.items() %}
+        <div class="kv-key">{{ k }}</div>
+        <div class="kv-value">{{ v }}</div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
     {% if run.resource_summary %}
     <div class="card">
       <h3 data-i18n="label.resources">Resources</h3>

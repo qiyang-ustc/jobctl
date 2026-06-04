@@ -144,7 +144,10 @@ class SlurmBackend(Backend):
                 f"Could not parse job ID from sbatch output: {result.stdout!r}"
             )
 
-        return SubmitResult(remote_job_id=job_id, workdir=workdir)
+        # Record the resolved submission request (for the run-detail panel).
+        slurm_request = self._resource_request(run)
+        slurm_request["job_id"] = job_id
+        return SubmitResult(remote_job_id=job_id, workdir=workdir, slurm_request=slurm_request)
 
     def poll(self, run: "Run") -> PollResult:
         """Query squeue; if not found, fall back to sacct for terminal state."""
@@ -238,29 +241,48 @@ class SlurmBackend(Backend):
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _build_directives(self, run: "Run", jobfile: "JobFile", workdir: str) -> list[str]:
-        """Build #SBATCH directive lines from server_config and sensible defaults."""
+    def _resource_request(self, run: "Run") -> dict:
+        """Resolve the SLURM resource request for *run*.
+
+        Precedence: per-run override (``run.slurm_request``) > per-server config
+        (``self._server_config``) > built-in fallback. ``account`` and
+        ``partition`` are OMITTED when neither override nor server config sets
+        them — different clusters use different (or no) accounts/partitions, so
+        forcing one server's values onto another is wrong (the old bug: oblix,
+        which uses partition ``lln`` and no account, got hipster's
+        ``--account=linuxusers --partition=capacity``).
+        """
         cfg = self._server_config
+        ov = getattr(run, "slurm_request", None) or {}
+
+        req: dict = {}
+        account = ov.get("account", cfg.get("account"))
+        if account:
+            req["account"] = account
+        partition = ov.get("partition", cfg.get("partition"))
+        if partition:
+            req["partition"] = partition
+        req["time"] = ov.get("time", cfg.get("time", "00:05:00"))
+        req["mem"] = ov.get("mem", cfg.get("mem", "1G"))
+        # accept either 'cpus' (CLI/override) or 'cpus_per_task' (server config)
+        req["cpus"] = ov.get("cpus", ov.get("cpus_per_task", cfg.get("cpus_per_task", 1)))
+        return req
+
+    def _build_directives(self, run: "Run", jobfile: "JobFile", workdir: str) -> list[str]:
+        """Build #SBATCH directive lines from the resolved resource request."""
+        req = self._resource_request(run)
         directives = [
             f"--job-name={run.run_id}",
             f"--output={workdir}/stdout.txt",
             f"--error={workdir}/stderr.txt",
         ]
-        # Account
-        account = cfg.get("account", "linuxusers")
-        directives.append(f"--account={account}")
-        # Partition
-        partition = cfg.get("partition", "capacity")
-        directives.append(f"--partition={partition}")
-        # Time
-        time_limit = cfg.get("time", "00:05:00")
-        directives.append(f"--time={time_limit}")
-        # Memory
-        mem = cfg.get("mem", "1G")
-        directives.append(f"--mem={mem}")
-        # CPUs
-        cpus = cfg.get("cpus_per_task", 1)
-        directives.append(f"--cpus-per-task={cpus}")
+        if req.get("account"):
+            directives.append(f"--account={req['account']}")
+        if req.get("partition"):
+            directives.append(f"--partition={req['partition']}")
+        directives.append(f"--time={req['time']}")
+        directives.append(f"--mem={req['mem']}")
+        directives.append(f"--cpus-per-task={req['cpus']}")
         return directives
 
     def _write_remote_file(self, remote_path: str, content: str) -> None:

@@ -25,6 +25,8 @@ class SubmitResult:
     """Result returned by Backend.submit()."""
     remote_job_id: str | None
     workdir: str
+    # Resolved SLURM submission request (None for non-SLURM backends).
+    slurm_request: dict | None = None
 
 
 @dataclass

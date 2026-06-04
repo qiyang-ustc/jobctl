@@ -109,10 +109,18 @@ def run(
     server: Annotated[Optional[str], typer.Option("--server", help="Server name override")] = None,
     reuse: Annotated[bool, typer.Option("--reuse/--no-reuse", help="Skip if reuse-eligible")] = False,
     callback: Annotated[Optional[str], typer.Option("--callback", help="Callback URL")] = None,
+    mem: Annotated[Optional[str], typer.Option("--mem", help="SLURM memory (e.g. 100M, 4G)")] = None,
+    cpus: Annotated[Optional[int], typer.Option("--cpus", help="SLURM cpus-per-task")] = None,
+    time_limit: Annotated[Optional[str], typer.Option("--time", help="SLURM time limit (e.g. 00:11:00)")] = None,
+    partition: Annotated[Optional[str], typer.Option("--partition", help="SLURM partition")] = None,
+    account: Annotated[Optional[str], typer.Option("--account", help="SLURM account")] = None,
     json_out: Annotated[bool, typer.Option("--json", help="Output JSON")] = False,
 ):
     """Submit a job. --wait blocks until done and prints the observation card.
-    --background (default) returns immediately and prints {run_id}."""
+    --background (default) returns immediately and prints {run_id}.
+
+    SLURM resource flags (--mem/--cpus/--time/--partition/--account) override
+    per-server config for slurm submits and are shown in the run-detail panel."""
     client = _get_client()
 
     # Parse params
@@ -136,11 +144,26 @@ def run(
     # (manifest or bare script): register it first to obtain its id, then submit
     # by id. Otherwise treat it as the name or id of an already-registered
     # JobFile. This makes `jobctl run path/to/job.yaml` work like a local command.
+    # SLURM resource overrides (only non-None keys; partition/account also
+    # selectable here without a --backend flag).
+    resources: dict = {}
+    if mem is not None:
+        resources["mem"] = mem
+    if cpus is not None:
+        resources["cpus"] = cpus
+    if time_limit is not None:
+        resources["time"] = time_limit
+    if partition is not None:
+        resources["partition"] = partition
+    if account is not None:
+        resources["account"] = account
+
     submit_kwargs: dict = {
         "params": params,
         "backend_override": backend_override,
         "reuse": reuse,
         "callback_url": callback,
+        "resources": resources or None,
     }
     if os.path.isfile(jobfile_ref):
         try:

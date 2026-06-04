@@ -325,6 +325,42 @@ class TestStore:
         assert fetched.input_hashes == run.input_hashes
         assert fetched.resource_summary == run.resource_summary
 
+    def test_slurm_request_round_trips(self, tmp_path):
+        """slurm_request persists via add_run and via update_run."""
+        from jobctl.db.store import Store
+        store = Store(str(tmp_path / "test.db"))
+        store.init_schema()
+        store.add_jobfile(make_jobfile())
+        run = make_run()
+        store.add_run(run)
+        assert store.get_run(run.run_id).slurm_request is None  # default
+
+        store.update_run(run.run_id, slurm_request={"partition": "lln", "mem": "100M", "cpus": 1})
+        got = store.get_run(run.run_id).slurm_request
+        assert got == {"partition": "lln", "mem": "100M", "cpus": 1}
+
+    def test_migration_adds_slurm_request_column(self, tmp_path):
+        """A runs table created without slurm_request gets the column on init_schema."""
+        db = str(tmp_path / "old.db")
+        conn = sqlite3.connect(db)
+        # Minimal pre-migration runs table (no slurm_request column)
+        conn.execute(
+            "CREATE TABLE runs (run_id TEXT PRIMARY KEY, jobfile_id TEXT, "
+            "jobfile_version INTEGER, params TEXT, input_hashes TEXT, backend TEXT, "
+            "server TEXT, task TEXT, remote_job_id TEXT, state TEXT, health TEXT, "
+            "exit_code INTEGER, submitted_at TEXT, started_at TEXT, finished_at TEXT, "
+            "last_heartbeat TEXT, workdir TEXT, stdout_path TEXT, stderr_path TEXT, "
+            "resource_summary TEXT, expectation_match TEXT, observation_card TEXT)"
+        )
+        conn.commit()
+        conn.close()
+
+        from jobctl.db.store import Store
+        store = Store(db)
+        store.init_schema()  # must ALTER TABLE to add the new column
+        cols = {r[1] for r in store._get_conn().execute("PRAGMA table_info(runs)")}
+        assert "slurm_request" in cols
+
     def test_update_run_state_health_card(self, tmp_path):
         """update_run mutates state/health/observation_card."""
         from jobctl.db.store import Store

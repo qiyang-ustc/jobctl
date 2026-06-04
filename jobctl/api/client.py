@@ -94,6 +94,7 @@ class ApiClient:
         backend_override: dict | None = None,
         reuse: bool = False,
         callback_url: str | None = None,
+        resources: dict | None = None,
     ) -> dict:
         """Submit a new run; returns the run dict (includes memory_hint).
 
@@ -102,6 +103,8 @@ class ApiClient:
                       (the response carries ``reused: true``).
         callback_url: if set, the daemon POSTs the observation card here when
                       the run reaches a terminal state.
+        resources:    SLURM resource overrides (partition/account/time/mem/cpus)
+                      applied on top of per-server config for slurm submits.
         """
         body: dict = {"params": params or {}}
         if jobfile_id:
@@ -114,6 +117,8 @@ class ApiClient:
             body["reuse"] = True
         if callback_url:
             body["callback_url"] = callback_url
+        if resources:
+            body["resources"] = resources
         resp = self._post("/runs", json=body)
         self._raise_for(resp, "submit")
         return resp.json()

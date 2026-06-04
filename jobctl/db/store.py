@@ -56,10 +56,18 @@ class Store:
         return self._conn
 
     def init_schema(self) -> None:
-        """Create all tables if they don't exist."""
+        """Create all tables if they don't exist, then run lightweight migrations."""
         conn = self._get_conn()
         for ddl in ALL_DDL:
             conn.execute(ddl)
+        conn.commit()
+        self._migrate(conn)
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        """Additive column migrations for DBs created before a field existed."""
+        run_cols = {r[1] for r in conn.execute("PRAGMA table_info(runs)")}
+        if "slurm_request" not in run_cols:
+            conn.execute("ALTER TABLE runs ADD COLUMN slurm_request TEXT")
         conn.commit()
 
     # ------------------------------------------------------------------
@@ -140,8 +148,8 @@ class Store:
                  backend, server, task, remote_job_id, state, health,
                  exit_code, submitted_at, started_at, finished_at, last_heartbeat,
                  workdir, stdout_path, stderr_path, resource_summary,
-                 expectation_match, observation_card)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 expectation_match, observation_card, slurm_request)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run.run_id, run.jobfile_id, run.jobfile_version,
@@ -154,6 +162,7 @@ class Store:
                 _j(run.resource_summary),
                 run.expectation_match.value if isinstance(run.expectation_match, Match) else run.expectation_match,
                 _j(run.observation_card) if run.observation_card is not None else None,
+                _j(run.slurm_request) if run.slurm_request is not None else None,
             ),
         )
         conn.commit()
@@ -186,7 +195,7 @@ class Store:
                 val = val.value if isinstance(val, Health) else val
             elif key in ("expectation_match",):
                 val = val.value if isinstance(val, Match) else val
-            elif key in ("resource_summary", "observation_card"):
+            elif key in ("resource_summary", "observation_card", "slurm_request"):
                 val = _j(val) if val is not None else None
 
             set_parts.append(f"{key} = ?")
@@ -240,6 +249,7 @@ class Store:
             resource_summary=_dj(row["resource_summary"], {}),
             expectation_match=Match(row["expectation_match"]) if row["expectation_match"] else None,
             observation_card=_dj(row["observation_card"]),
+            slurm_request=_dj(row["slurm_request"], None) if "slurm_request" in row.keys() else None,
         )
 
     # ------------------------------------------------------------------

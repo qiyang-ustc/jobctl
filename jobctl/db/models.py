@@ -90,6 +90,9 @@ class Run:
     resource_summary: dict
     expectation_match: Match | None
     observation_card: dict | None
+    # Resolved SLURM submission request (partition/account/time/mem/cpus + job_id).
+    # None for non-SLURM backends. Surfaced in the run-detail panel.
+    slurm_request: dict | None = None
 
 
 @dataclass
@@ -194,6 +197,7 @@ CREATE TABLE IF NOT EXISTS runs (
     resource_summary TEXT NOT NULL DEFAULT '{}',
     expectation_match TEXT,
     observation_card TEXT,
+    slurm_request TEXT,
     FOREIGN KEY (jobfile_id) REFERENCES jobfiles(id)
 )
 """

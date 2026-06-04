@@ -343,6 +343,7 @@ def _register_routes(app: FastAPI) -> None:
             resource_summary={},
             expectation_match=None,
             observation_card=None,
+            slurm_request=body.get("resources") or None,
         )
         store.add_run(run)
 
@@ -350,12 +351,15 @@ def _register_routes(app: FastAPI) -> None:
         try:
             backend = get_backend(backend_name, server_name, cfg)
             submit_result = backend.submit(run, jf)
-            store.update_run(
-                run_id,
+            update_fields = dict(
                 state=State.SUBMITTED,
                 remote_job_id=submit_result.remote_job_id,
                 workdir=submit_result.workdir,
             )
+            # Persist the resolved SLURM request (with job_id) for the panel.
+            if submit_result.slurm_request is not None:
+                update_fields["slurm_request"] = submit_result.slurm_request
+            store.update_run(run_id, **update_fields)
             # Update in-memory monitor's backend cache for this run
             monitor = _monitor(request)
             monitor._backends[run_id] = backend
@@ -796,6 +800,7 @@ def _register_routes(app: FastAPI) -> None:
             "backend": run.backend,
             "server": run.server,
             "observation_card": run.observation_card,
+            "slurm_request": getattr(run, "slurm_request", None),
         }
 
         # Normalize artifact types for template
@@ -1040,6 +1045,7 @@ def _run_to_dict(run) -> dict:
             else run.expectation_match
         ),
         "observation_card": run.observation_card,
+        "slurm_request": getattr(run, "slurm_request", None),
     }
 
 
