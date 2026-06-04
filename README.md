@@ -1,145 +1,51 @@
 # jobctl
 
-A CLI-first, JobFile-native gateway that runs research jobs locally or on
-remote clusters and manages their full lifecycle: monitoring, artifact
-indexing, expectation contracts, cheap-model analysis, and result delivery.
+Run any research job — a script, an `sbatch` file, a container, an instrument
+command — on your laptop or a remote cluster (`ssh` / `slurm`) **as if it were a
+local command**, and get back a *result you can act on*, not just "done".
+
+You give jobctl a **JobFile** (any executable + how to run it + what counts as
+success). It submits, watches health, collects artifacts, checks the output
+against an expectation, and returns an **observation card**: what happened,
+whether the signal is usable / weak / bad, and the recommended next step.
+
+It's CLI-first and every command speaks `--json`, so an LLM agent can drive it
+straight from the shell.
+
+## Use it
+
+```bash
+jobctl run job.jobfile.yaml --wait --json   # submit, block, get the observation card
+jobctl run job.jobfile.yaml                 # background → prints a run_id
+jobctl await  <run_id> --json               # block on a backgrounded run
+jobctl status <run_id>                      # state + health
+jobctl logs / artifacts / inspect <run_id>  # look at what came back
+jobctl memory query --name <job> --json     # has this run before? can I reuse it?
+jobctl servers --json                       # cluster health (online, load, queue)
+```
+
+`jobctl --help` lists the rest. A web UI runs at `http://127.0.0.1:7421`
+(server health, run buckets, per-run logs / artifacts / observation cards).
+
+## A JobFile
+
+```yaml
+name: my-experiment
+command: "python train.py --lr {lr}"
+params:  { lr: { type: float, default: 0.001 } }
+artifacts: ["*.csv", "checkpoints/**"]
+expectation: "final loss below 0.1"
+```
+
+Or skip the manifest and point it at a bare script — `jobctl run train.py` —
+and it wraps `.py` / `.sh` / `.jl` / `.R` / `.sbatch` automatically. Remote
+backends (`ssh` / `slurm`) read server config from `~/.cluster.yaml`.
 
 ## Install
 
 ```bash
-pip install -e .
+pip install -e .       # Python 3.11+
 ```
 
-Requires Python 3.11+. Optional: `DEEPSEEK_API_KEY` for AI-powered run analysis.
-
-## Quick Start
-
-### 1. Start the daemon
-
-```bash
-jobctl serve
-```
-
-Starts the FastAPI daemon on `http://127.0.0.1:7421` with a SQLite store and
-asyncio monitor loop.
-
-### 2. Register a JobFile
-
-Create a manifest `my_job.jobfile.yaml`:
-
-```yaml
-name: my-experiment
-command: "python train.py --lr {lr} --epochs {epochs}"
-params:
-  lr:
-    type: float
-    default: 0.001
-  epochs:
-    type: int
-    default: 10
-backends:
-  - backend: local
-artifacts:
-  - "*.csv"
-  - "*.png"
-  - "checkpoints/**"
-expectation: "loss below 0.1 at epoch 10"
-```
-
-Register it:
-
-```bash
-jobctl register my_job.jobfile.yaml
-```
-
-### 3. Submit a run
-
-```bash
-# Background (returns run_id immediately)
-jobctl run my-experiment --param lr=0.01 --param epochs=20
-
-# Wait for completion and print the observation card
-jobctl run my-experiment --param lr=0.01 --wait --json
-```
-
-### 4. Inspect results
-
-```bash
-jobctl status <run_id>
-jobctl logs <run_id>
-jobctl artifacts <run_id> --json
-jobctl inspect <run_id> --json
-```
-
-### 5. Query run memory
-
-```bash
-jobctl memory query --name my-experiment --json
-```
-
-Returns: `{has_jobfile, runs, exact_match_run_id, reuse_eligible, outcome, ...}`
-
-### 6. Rerun
-
-```bash
-jobctl rerun <run_id>
-```
-
-### 7. Web UI
-
-Open `http://127.0.0.1:7421` in a browser for:
-- Server health cards
-- Run buckets (running / queued / stuck / weak-signal / completed / failed)
-- Per-run detail: logs, artifact previews, observation card, expectation criteria
-- JobFile detail: params schema, run history, contract versions
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| `jobctl serve` | Start the daemon |
-| `jobctl run <jobfile>` | Submit a run (`--wait` to block) |
-| `jobctl await <run_id>` | Block until terminal state |
-| `jobctl status <run_id>` | Current state |
-| `jobctl logs <run_id>` | Tail stdout/stderr |
-| `jobctl artifacts <run_id>` | List artifacts |
-| `jobctl inspect <run_id>` | Full run record + observation card |
-| `jobctl cancel <run_id>` | Cancel a run |
-| `jobctl rerun <run_id>` | Copy params and resubmit |
-| `jobctl servers` | Server health rows |
-| `jobctl register <path>` | Register a JobFile |
-| `jobctl jobfiles` | List registered JobFiles |
-| `jobctl feedback <run_id> --text "..."` | Post feedback |
-| `jobctl expect` | List expectation contracts |
-| `jobctl expect propose <run_id>` | Propose criteria from feedback |
-| `jobctl expect confirm <criterion_id>` | Confirm a criterion |
-| `jobctl memory query` | Query run memory |
-
-All structured commands support `--json` for machine-readable output.
-
-## Backends
-
-- **local** — subprocess in a temp workdir (default)
-- **ssh** — rsync + nohup on a remote host
-- **slurm** — `sbatch` / `squeue` / `sacct` on an HPC cluster
-
-Configure servers in `~/.cluster.yaml` (standard cluster config) or
-`~/.jobctl/config.toml`.
-
-## Architecture
-
-```
-CLI (Typer)  →  ApiClient (httpx)  →  FastAPI daemon
-                                           │
-                                    ┌──────┴──────┐
-                                 SQLite DB    Monitor loop
-                                 (Store)      (asyncio)
-                                    │              │
-                              Backends ←──── poll_runs()
-                              (local/ssh/slurm)    │
-                                            on_terminal()
-                                                   │
-                              Artifact Indexer ────┤
-                              Expectation Engine ──┤
-                              Analyzer (offline) ──┘
-```
+Optional: set `DEEPSEEK_API_KEY` for richer (cheap-model) run narration —
+without it, jobctl falls back to a built-in offline analyzer.
