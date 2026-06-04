@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Fake scancel: records the job ID that was cancelled.
+# Optionally writes the jobid to FAKEBIN_SCANCEL_LOG if set.
+JOBID="$1"
+if [[ -n "${FAKEBIN_SCANCEL_LOG:-}" ]]; then
+    echo "${JOBID}" >> "${FAKEBIN_SCANCEL_LOG}"
+fi
+exit 0

@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Fake squeue: simulates job state transitions.
+# FAKEBIN_SQUEUE_STATE controls the output:
+#   PD  -> prints a pending line
+#   R   -> prints a running line
+#   ""  (empty/unset) -> job no longer in queue (completed/done)
+# Default state if unset: R
+# Note: use ${VAR-default} (no colon) so empty string is not replaced by default.
+JOBID="${FAKEBIN_SBATCH_JOBID:-12345}"
+
+# If FAKEBIN_SQUEUE_STATE is unset, default to R; if explicitly set to empty, empty = done
+if [[ -z "${FAKEBIN_SQUEUE_STATE+x}" ]]; then
+    STATE="R"
+else
+    STATE="${FAKEBIN_SQUEUE_STATE}"
+fi
+
+if [[ -z "$STATE" ]]; then
+    # Job has left the queue — print header only
+    echo "JOBID|STATE|REASON"
+    exit 0
+fi
+
+echo "JOBID|STATE|REASON"
+echo "${JOBID}|${STATE}|None"
+exit 0

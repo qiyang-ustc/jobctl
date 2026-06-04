@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Fake sacct: returns a completed job record with resource info.
+# FAKEBIN_SACCT_STATE: CD (default), F, TO, CA
+# FAKEBIN_SACCT_EXITCODE: 0 (default)
+STATE="${FAKEBIN_SACCT_STATE:-CD}"
+EXITCODE="${FAKEBIN_SACCT_EXITCODE:-0}"
+JOBID="${FAKEBIN_SBATCH_JOBID:-12345}"
+
+echo "JobID|State|ExitCode|CPUTime|MaxRSS|Elapsed"
+echo "${JOBID}|${STATE}|${EXITCODE}:0|00:01:00|128000K|00:00:30"
+exit 0

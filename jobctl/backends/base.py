@@ -1,0 +1,136 @@
+"""Backend ABC + result dataclasses + select_backend() + get_backend()."""
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from jobctl.db.models import JobFile, Run, Server, State
+
+
+@dataclass
+class SubmitResult:
+    """Result returned by Backend.submit()."""
+    remote_job_id: str | None
+    workdir: str
+
+
+@dataclass
+class PollResult:
+    """Result returned by Backend.poll()."""
+    state: "State"
+    resource: dict
+    last_log_mtime: float | None = None
+
+
+@dataclass
+class CollectResult:
+    """Result returned by Backend.collect()."""
+    exit_code: int | None
+    stdout_path: str
+    stderr_path: str
+    artifact_dir: str
+    resource_summary: dict = field(default_factory=dict)
+
+
+class Backend(ABC):
+    """Abstract base class for all execution backends."""
+
+    name: str
+
+    @abstractmethod
+    def submit(self, run: "Run", jobfile: "JobFile") -> SubmitResult:
+        """Submit the job; returns remote_job_id and workdir."""
+
+    @abstractmethod
+    def poll(self, run: "Run") -> PollResult:
+        """Poll job status; returns current State + resource snapshot."""
+
+    @abstractmethod
+    def collect(self, run: "Run") -> CollectResult:
+        """Collect terminal results: stdout/stderr paths, artifact dir, exit code."""
+
+    @abstractmethod
+    def cancel(self, run: "Run") -> None:
+        """Cancel/kill the job."""
+
+
+# ---------------------------------------------------------------------------
+# Backend selector
+# ---------------------------------------------------------------------------
+
+def select_backend(
+    jobfile: "JobFile",
+    servers: "list[Server]",
+    override: dict | None,
+) -> "tuple[str, str | None, str | None]":
+    """Choose (backend, server, task) based on preferences + server health.
+
+    Priority:
+    1. If *override* dict is provided, use it directly.
+    2. Walk ``jobfile.backend_prefs`` in order:
+       - If the pref has no ``server`` key (local), pick it immediately.
+       - Otherwise pick it only if the named server is online.
+    3. Fall back to ``("local", None, None)``.
+
+    Returns:
+        Tuple of (backend_name, server_name_or_None, task_or_None).
+    """
+    if override:
+        return (
+            override.get("backend", "local"),
+            override.get("server"),
+            override.get("task"),
+        )
+
+    server_map: dict[str, bool] = {s.name: s.online for s in servers}
+
+    for pref in jobfile.backend_prefs:
+        backend = pref.get("backend", "local")
+        server = pref.get("server")
+        task = pref.get("task")
+
+        if server is None:
+            # Local or no-server backend — always available
+            return (backend, None, task)
+
+        if server_map.get(server, False):
+            return (backend, server, task)
+
+    return ("local", None, None)
+
+
+# ---------------------------------------------------------------------------
+# Backend factory
+# ---------------------------------------------------------------------------
+
+def get_backend(backend: str, server: str | None, config: dict) -> Backend:
+    """Instantiate and return the correct Backend implementation.
+
+    Args:
+        backend:  One of "local", "ssh", "slurm".
+        server:   Server name (required for ssh/slurm).
+        config:   Config dict (from jobctl.config) — used to look up server
+                  settings such as host, user, remote_path.
+
+    Raises:
+        ValueError: if *backend* is not recognised.
+    """
+    if backend == "local":
+        from jobctl.backends.local import LocalBackend
+        return LocalBackend()
+
+    if backend in ("ssh", "slurm"):
+        servers_cfg: dict = config.get("servers", {})
+        server_config: dict = servers_cfg.get(server, {}) if server else {}
+
+    if backend == "ssh":
+        from jobctl.backends.ssh import SshBackend
+        return SshBackend(server=server, server_config=server_config)
+
+    if backend == "slurm":
+        from jobctl.backends.slurm import SlurmBackend
+        return SlurmBackend(server=server, server_config=server_config)
+
+    raise ValueError(f"Unknown backend: {backend!r}")

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Fake sbatch: prints a fixed job ID to stdout.
+# Accepts any arguments; ignores them.
+# Optionally honour FAKEBIN_SBATCH_FAIL to simulate failure.
+if [[ "${FAKEBIN_SBATCH_FAIL:-}" == "1" ]]; then
+    echo "sbatch: error: fake failure" >&2
+    exit 1
+fi
+JOBID="${FAKEBIN_SBATCH_JOBID:-12345}"
+echo "Submitted batch job ${JOBID}"
+exit 0
