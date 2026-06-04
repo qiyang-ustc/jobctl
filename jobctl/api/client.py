@@ -92,8 +92,17 @@ class ApiClient:
         jobfile_name: str | None = None,
         params: dict | None = None,
         backend_override: dict | None = None,
+        reuse: bool = False,
+        callback_url: str | None = None,
     ) -> dict:
-        """Submit a new run; returns the run dict (includes memory_hint)."""
+        """Submit a new run; returns the run dict (includes memory_hint).
+
+        reuse:        if True and an exact prior usable run exists, the daemon
+                      returns that prior run instead of launching a new one
+                      (the response carries ``reused: true``).
+        callback_url: if set, the daemon POSTs the observation card here when
+                      the run reaches a terminal state.
+        """
         body: dict = {"params": params or {}}
         if jobfile_id:
             body["jobfile_id"] = jobfile_id
@@ -101,6 +110,10 @@ class ApiClient:
             body["jobfile_name"] = jobfile_name
         if backend_override:
             body["backend_override"] = backend_override
+        if reuse:
+            body["reuse"] = True
+        if callback_url:
+            body["callback_url"] = callback_url
         resp = self._post("/runs", json=body)
         self._raise_for(resp, "submit")
         return resp.json()

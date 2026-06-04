@@ -222,7 +222,15 @@ def _register_routes(app: FastAPI) -> None:
             updated = store.get_jobfile(existing.id)
             return _jobfile_to_dict(updated)
 
+        # Seed and persist a default expectation contract, linked to the jobfile,
+        # so the expectation layer is active from first registration: /expect and
+        # the UI show it, runs classify against it, and the distiller has a base
+        # contract to merge proposed criteria into.
+        from jobctl.expectations.contracts import default_contract
+        contract = default_contract(jf)
+        jf.expectation_contract_id = contract.id
         store.add_jobfile(jf)
+        store.save_contract(contract)
         return _jobfile_to_dict(jf)
 
     @app.get("/jobfiles")
@@ -283,6 +291,16 @@ def _register_routes(app: FastAPI) -> None:
             input_hashes=ihashes,
         )
 
+        # Reuse short-circuit: if requested and an exact prior usable run exists,
+        # return it instead of launching a new run.
+        if body.get("reuse") and memory_hint.get("reuse_eligible") and memory_hint.get("exact_match_run_id"):
+            prior = store.get_run(memory_hint["exact_match_run_id"])
+            if prior is not None:
+                result = _run_to_dict(prior)
+                result["memory_hint"] = memory_hint
+                result["reused"] = True
+                return result
+
         # Select backend
         servers = store.list_servers()
         backend_override = body.get("backend_override")
@@ -332,6 +350,11 @@ def _register_routes(app: FastAPI) -> None:
             # Update in-memory monitor's backend cache for this run
             monitor = _monitor(request)
             monitor._backends[run_id] = backend
+            # Register a per-run callback URL (in-memory, mirrors the backend
+            # cache) so the monitor can POST the card on terminal state.
+            callback_url = body.get("callback_url")
+            if callback_url:
+                monitor._callback_urls[run_id] = callback_url
         except Exception as exc:
             logger.exception("Backend submit failed for run=%s: %s", run_id, exc)
             from jobctl.db.models import State

@@ -204,6 +204,10 @@ class Monitor:
         # Injectable: run_id -> Backend (for testing; production resolves dynamically)
         self._backends: dict[str, "Backend"] = {}
 
+        # run_id -> per-run callback URL, set by the API at submit time so the
+        # terminal pipeline can POST the observation card to it.
+        self._callback_urls: dict[str, str] = {}
+
         # Timing thresholds
         self._stuck_timeout = float(
             config.get("stuck_timeout_seconds", _DEFAULT_STUCK_TIMEOUT)
@@ -528,6 +532,7 @@ class Monitor:
         # 5. Evaluate against contract
         match: Match | None = None
         key_evidence: list[str] = []
+        per_crit: list[dict] = []
         health = run.health if isinstance(run.health, Health) else Health.OK
 
         if run.state == State.STUCK:
@@ -547,7 +552,7 @@ class Monitor:
                     contract = default_contract(jobfile)
 
                 try:
-                    match, key_evidence, _per_crit = evaluate(
+                    match, key_evidence, per_crit = evaluate(
                         contract, run, artifacts, stdout, stderr
                     )
                 except Exception as exc:
@@ -593,6 +598,10 @@ class Monitor:
             analyzer=self.analyzer,
         )
 
+        # Carry per-criterion results in the card so the UI can show PASS/FAIL.
+        if isinstance(card, dict):
+            card["per_criterion"] = per_crit
+
         # 7. Persist card + expectation_match
         self.store.update_run(
             run.run_id,
@@ -601,7 +610,13 @@ class Monitor:
             health=health,
         )
 
-        # 8. Notify
+        # 8. Notify — reattach any per-run callback URL so get_notifiers picks it up.
+        cb = self._callback_urls.get(run.run_id)
+        if cb:
+            try:
+                run._callback_url = cb
+            except Exception:
+                pass
         notifiers = self.notifiers_factory(run)
         for notifier in notifiers:
             try:

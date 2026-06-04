@@ -139,6 +139,8 @@ def run(
     submit_kwargs: dict = {
         "params": params,
         "backend_override": backend_override,
+        "reuse": reuse,
+        "callback_url": callback,
     }
     if os.path.isfile(jobfile_ref):
         try:
@@ -457,9 +459,18 @@ def feedback(
     run_id: Annotated[str, typer.Argument(help="Run ID")],
     text: Annotated[str, typer.Option("--text", help="Feedback text")] = "",
     kind: Annotated[str, typer.Option("--kind", help="Feedback kind (note/good/bad)")] = "note",
+    accept: Annotated[bool, typer.Option("--accept", help="Mark the run's result as accepted (kind=good)")] = False,
+    reject: Annotated[bool, typer.Option("--reject", help="Mark the run's result as rejected (kind=bad)")] = False,
     json_out: Annotated[bool, typer.Option("--json", help="Output JSON")] = False,
 ):
     """Post user feedback for a run."""
+    if accept and reject:
+        typer.echo("Error: --accept and --reject are mutually exclusive", err=True)
+        raise typer.Exit(1)
+    if accept:
+        kind = "good"
+    elif reject:
+        kind = "bad"
     client = _get_client()
     result = client.feedback(run_id, kind=kind, text=text)
 
@@ -483,6 +494,33 @@ def expect_main(
     if ctx.invoked_subcommand is not None:
         return
     client = _get_client()
+    result = client.expect(jobfile_id=jobfile_id)
+
+    if json_out:
+        _print_json(result)
+    else:
+        if not result:
+            typer.echo("(no contracts)")
+        else:
+            _print_pretty(result)
+
+
+@expect_app.command(name="list")
+def expect_list(
+    jobfile: Annotated[Optional[str], typer.Argument(help="JobFile id or name (optional; all if omitted)")] = None,
+    json_out: Annotated[bool, typer.Option("--json", help="Output JSON")] = False,
+):
+    """List expectation contracts (optionally filtered by JobFile id or name)."""
+    client = _get_client()
+    jobfile_id = jobfile
+    if jobfile:
+        try:
+            for jf in client.jobfiles():
+                if jf.get("id") == jobfile or jf.get("name") == jobfile:
+                    jobfile_id = jf["id"]
+                    break
+        except Exception:
+            pass
     result = client.expect(jobfile_id=jobfile_id)
 
     if json_out:
