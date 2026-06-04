@@ -9,6 +9,17 @@ if TYPE_CHECKING:
     from jobctl.db.models import JobFile, Run, Server, State
 
 
+def resolved_command(run: "Run", jobfile: "JobFile") -> str:
+    """Render the jobfile command template with the run's resolved params.
+
+    Backends must execute THIS, not ``jobfile.command_template`` directly —
+    otherwise ``{param}`` placeholders are never substituted.
+    """
+    from jobctl.jobfile import render_command
+
+    return render_command(jobfile, run.params or {})
+
+
 @dataclass
 class SubmitResult:
     """Result returned by Backend.submit()."""

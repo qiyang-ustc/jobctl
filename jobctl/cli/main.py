@@ -22,6 +22,7 @@ All commands that produce structured output support --json to emit compact JSON.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from typing import Annotated, Optional
 
@@ -101,7 +102,7 @@ _TERMINAL_STATES = {"completed", "failed", "cancelled", "stuck", "timeout"}
 
 @app.command()
 def run(
-    jobfile_ref: Annotated[str, typer.Argument(help="JobFile id or name")],
+    jobfile_ref: Annotated[str, typer.Argument(help="JobFile path (manifest or bare script), id, or name")],
     wait: Annotated[bool, typer.Option("--wait/--background", help="Block until terminal")] = False,
     param: Annotated[Optional[list[str]], typer.Option("--param", "-p", help="key=value param")] = None,
     backend: Annotated[Optional[str], typer.Option("--backend", help="Backend override (local/ssh/slurm)")] = None,
@@ -131,26 +132,41 @@ def run(
         if server:
             backend_override["server"] = server
 
-    # Determine if the ref is an id or a name
+    # Resolve the ref. If it points to an existing file, it is a JobFile path
+    # (manifest or bare script): register it first to obtain its id, then submit
+    # by id. Otherwise treat it as the name or id of an already-registered
+    # JobFile. This makes `jobctl run path/to/job.yaml` work like a local command.
     submit_kwargs: dict = {
         "params": params,
         "backend_override": backend_override,
     }
-    # Try as ID first; fall back to name
-    submit_kwargs["jobfile_name"] = jobfile_ref
-
-    try:
-        result = client.submit(**submit_kwargs)
-    except RuntimeError as exc:
-        # Maybe it's an ID, not a name
+    if os.path.isfile(jobfile_ref):
         try:
-            submit_kwargs2 = dict(submit_kwargs)
-            del submit_kwargs2["jobfile_name"]
-            submit_kwargs2["jobfile_id"] = jobfile_ref
-            result = client.submit(**submit_kwargs2)
-        except Exception:
+            # Absolutize the jobfile path: the daemon/backend run in a different
+            # working directory than this CLI invocation.
+            jf = client.register(os.path.abspath(jobfile_ref))
+            # Absolutize path-typed params for the same reason — backends execute
+            # in their own workdir, so a relative script path would not be found.
+            schema = jf.get("params_schema") or {}
+            for k, v in list(params.items()):
+                spec = schema.get(k) or {}
+                if isinstance(v, str) and (spec.get("type") == "path" or os.path.isfile(v)):
+                    params[k] = os.path.abspath(v)
+            submit_kwargs["jobfile_id"] = jf["id"]
+            result = client.submit(**submit_kwargs)
+        except RuntimeError as exc:
             typer.echo(f"Error submitting run: {exc}", err=True)
             raise typer.Exit(1)
+    else:
+        # Not a file — try as name, then fall back to id.
+        try:
+            result = client.submit(jobfile_name=jobfile_ref, **submit_kwargs)
+        except RuntimeError as exc:
+            try:
+                result = client.submit(jobfile_id=jobfile_ref, **submit_kwargs)
+            except Exception:
+                typer.echo(f"Error submitting run: {exc}", err=True)
+                raise typer.Exit(1)
 
     run_id = result["run_id"]
 
@@ -533,3 +549,7 @@ def serve(
 
     application = create_app(config=config, start_monitor=True)
     uvicorn.run(application, host=host, port=port, reload=reload)
+
+
+if __name__ == "__main__":
+    app()

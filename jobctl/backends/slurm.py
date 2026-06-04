@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
-from jobctl.backends.base import Backend, CollectResult, PollResult, SubmitResult
+from jobctl.backends.base import Backend, CollectResult, PollResult, SubmitResult, resolved_command
 from jobctl.db.models import Health, State
 
 if TYPE_CHECKING:
@@ -82,7 +82,7 @@ class SlurmBackend(Backend):
         script_content += f"#SBATCH --output={workdir}/stdout.txt\n"
         script_content += f"#SBATCH --error={workdir}/stderr.txt\n"
         script_content += "\n"
-        script_content += jobfile.command_template + "\n"
+        script_content += resolved_command(run, jobfile) + "\n"
 
         # Write script to a temp file (local; for ssh this would be rsync'd)
         import tempfile as _tmpfile

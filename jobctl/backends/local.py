@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from jobctl.backends.base import Backend, CollectResult, PollResult, SubmitResult
+from jobctl.backends.base import Backend, CollectResult, PollResult, SubmitResult, resolved_command
 from jobctl.db.models import Health, State
 
 if TYPE_CHECKING:
@@ -53,7 +53,7 @@ class LocalBackend(Backend):
 
         # Wrap the command so we capture the exit code to a file
         wrapper = (
-            f"({jobfile.command_template}); echo $? > {exit_code_path}"
+            f"({resolved_command(run, jobfile)}); echo $? > {exit_code_path}"
         )
 
         proc = subprocess.Popen(

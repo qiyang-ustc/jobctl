@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
-from jobctl.backends.base import Backend, CollectResult, PollResult, SubmitResult
+from jobctl.backends.base import Backend, CollectResult, PollResult, SubmitResult, resolved_command
 from jobctl.db.models import Health, State
 
 if TYPE_CHECKING:
@@ -66,7 +66,7 @@ class SshBackend(Backend):
         # Build the remote command:
         # nohup bash -c '... ; echo $? > exit_code.txt' > stdout.txt 2> stderr.txt &
         # echo $! > pid.txt
-        inner = f"({jobfile.command_template}); echo $? > {exit_code_path}"
+        inner = f"({resolved_command(run, jobfile)}); echo $? > {exit_code_path}"
         remote_cmd = (
             f"nohup bash -c {_shell_quote(inner)} "
             f"> {stdout_path} 2> {stderr_path} & "
