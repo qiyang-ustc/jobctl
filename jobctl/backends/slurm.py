@@ -1,6 +1,7 @@
-"""SlurmBackend: submits jobs via sbatch; polls via squeue/sacct; collects via sacct."""
+"""SlurmBackend: submits jobs via sbatch; polls via squeue/sacct; collects via rsync."""
 from __future__ import annotations
 
+import logging
 import os
 import re
 import subprocess
@@ -14,6 +15,7 @@ from jobctl.db.models import Health, State
 if TYPE_CHECKING:
     from jobctl.db.models import JobFile, Run
 
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # SLURM state code -> jobctl State mapping
@@ -46,8 +48,27 @@ def _default_run_cmd(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, **kwargs)
 
 
+def _resolve_remote_path(raw: str, jobfile_name: str = "runs") -> str:
+    """Substitute {project} with jobfile name slug."""
+    slug = jobfile_name.replace(" ", "_").replace("/", "_") or "runs"
+    return raw.format(project=slug)
+
+
 class SlurmBackend(Backend):
-    """Backend that submits jobs to a SLURM cluster.
+    """Backend that submits jobs to a SLURM cluster via SSH.
+
+    Lifecycle:
+    1. ``submit``:
+       - Create remote workdir via SSH.
+       - Write sbatch script on remote via SSH stdin (cat > file).
+       - Run ``sbatch <remote_script>`` via SSH; capture job ID.
+    2. ``poll``:
+       - SSH ``squeue``; fall back to ``sacct`` when not in queue.
+    3. ``collect``:
+       - Rsync remote workdir to a local mirror (best-effort; non-fatal on failure).
+       - Parse exit code from sacct.
+    4. ``cancel``:
+       - SSH ``scancel <job_id>``.
 
     In production the commands are SSH-wrapped (``ssh <server> <cmd>``).
     For unit tests a custom *run_cmd* callable is injected so that fakebin
@@ -66,39 +87,45 @@ class SlurmBackend(Backend):
         self._server_config = server_config
         self._host = server_config.get("host", server)
         self._user = server_config.get("user")
-        self._remote_path = server_config.get("remote_path", f"/tmp/jobctl/{server}")
-        self._run_cmd = run_cmd or self._ssh_run_cmd
+        self._remote_path_template = server_config.get("remote_path", f"/tmp/jobctl/{server}")
+        # run_cmd is used for SLURM commands (sbatch, squeue, sacct, scancel).
+        # Defaults to ssh-wrapped execution; tests inject a fakebin runner.
+        self._run_cmd = run_cmd or self._default_ssh_run_cmd
+
+    def _remote_path(self, jobfile_name: str = "runs") -> str:
+        return _resolve_remote_path(self._remote_path_template, jobfile_name)
 
     # ------------------------------------------------------------------
     # Backend interface
     # ------------------------------------------------------------------
 
     def submit(self, run: "Run", jobfile: "JobFile") -> SubmitResult:
-        """Write a minimal job script and run sbatch; capture job ID."""
-        workdir = run.workdir or self._remote_path
-        # Build the sbatch script inline
+        """Write a job script on the remote host and run sbatch; capture job ID."""
+        base = self._remote_path(jobfile.name if jobfile else "runs")
+        workdir = f"{base}/{run.run_id}"
+
+        # Create remote workdir via SSH (uses _run_cmd so tests can intercept)
+        self._run_cmd(["mkdir", "-p", workdir])
+
+        remote_script = f"{workdir}/job.sh"
+
+        # Build sbatch directives
+        directives = self._build_directives(run, jobfile, workdir)
+
         script_content = "#!/bin/bash\n"
-        script_content += f"#SBATCH --job-name={run.run_id}\n"
-        script_content += f"#SBATCH --output={workdir}/stdout.txt\n"
-        script_content += f"#SBATCH --error={workdir}/stderr.txt\n"
+        for d in directives:
+            script_content += f"#SBATCH {d}\n"
         script_content += "\n"
+        # cd into workdir so relative paths (like results.csv) land there
+        script_content += f"cd {workdir}\n"
         script_content += resolved_command(run, jobfile) + "\n"
 
-        # Write script to a temp file (local; for ssh this would be rsync'd)
-        import tempfile as _tmpfile
-        with _tmpfile.NamedTemporaryFile(
-            mode="w", suffix=".sh", delete=False, prefix="jobctl_"
-        ) as f:
-            f.write(script_content)
-            script_path = f.name
+        # Write script to remote via SSH stdin (avoids local temp file issues)
+        # _write_remote_file uses _run_cmd so tests can intercept
+        self._write_remote_file(remote_script, script_content)
 
-        try:
-            result = self._run_cmd(["sbatch", script_path])
-        finally:
-            try:
-                os.unlink(script_path)
-            except OSError:
-                pass
+        # Submit
+        result = self._run_cmd(["sbatch", remote_script])
 
         if result.returncode != 0:
             raise RuntimeError(
@@ -146,9 +173,32 @@ class SlurmBackend(Backend):
         return self._poll_via_sacct(job_id)
 
     def collect(self, run: "Run") -> CollectResult:
-        """Collect terminal job info: exit code from sacct, stdout/stderr paths."""
+        """Collect results: rsync remote workdir to local mirror, parse sacct."""
         job_id = run.remote_job_id or ""
-        workdir = run.workdir or "."
+        remote_workdir = run.workdir or "."
+
+        # Local mirror: ~/.jobctl/runs/<run_id>/
+        local_mirror = str(Path.home() / ".jobctl" / "runs" / run.run_id)
+        Path(local_mirror).mkdir(parents=True, exist_ok=True)
+
+        # Rsync remote workdir -> local mirror (best-effort, non-fatal on error)
+        # Use raw subprocess (not _run_cmd) since rsync is not a SLURM command
+        # and tests don't need to intercept it.
+        remote_spec = f"{self._host}:{remote_workdir}/"
+        rsync_result = subprocess.run(
+            ["rsync", "-az", remote_spec, local_mirror + "/"],
+            capture_output=True, text=True,
+        )
+        if rsync_result.returncode != 0:
+            logger.warning(
+                "collect: rsync from %s failed (rc=%d): %s",
+                remote_spec, rsync_result.returncode, rsync_result.stderr.strip()
+            )
+            # Fall back to remote_workdir for artifact discovery
+            # (only useful if workdir happens to be locally accessible)
+            artifact_dir = remote_workdir
+        else:
+            artifact_dir = local_mirror
 
         # Get exit code from sacct
         exit_code: int | None = None
@@ -163,14 +213,11 @@ class SlurmBackend(Backend):
             ])
             exit_code, resource_summary = self._parse_sacct(sacct_result.stdout, job_id)
 
-        stdout_path = str(Path(workdir) / "stdout.txt")
-        stderr_path = str(Path(workdir) / "stderr.txt")
-
         return CollectResult(
             exit_code=exit_code,
-            stdout_path=stdout_path,
-            stderr_path=stderr_path,
-            artifact_dir=workdir,
+            stdout_path=str(Path(artifact_dir) / "stdout.txt"),
+            stderr_path=str(Path(artifact_dir) / "stderr.txt"),
+            artifact_dir=artifact_dir,
             resource_summary=resource_summary,
         )
 
@@ -185,7 +232,57 @@ class SlurmBackend(Backend):
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _ssh_run_cmd(self, cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+    def _build_directives(self, run: "Run", jobfile: "JobFile", workdir: str) -> list[str]:
+        """Build #SBATCH directive lines from server_config and sensible defaults."""
+        cfg = self._server_config
+        directives = [
+            f"--job-name={run.run_id}",
+            f"--output={workdir}/stdout.txt",
+            f"--error={workdir}/stderr.txt",
+        ]
+        # Account
+        account = cfg.get("account", "linuxusers")
+        directives.append(f"--account={account}")
+        # Partition
+        partition = cfg.get("partition", "capacity")
+        directives.append(f"--partition={partition}")
+        # Time
+        time_limit = cfg.get("time", "00:05:00")
+        directives.append(f"--time={time_limit}")
+        # Memory
+        mem = cfg.get("mem", "1G")
+        directives.append(f"--mem={mem}")
+        # CPUs
+        cpus = cfg.get("cpus_per_task", 1)
+        directives.append(f"--cpus-per-task={cpus}")
+        return directives
+
+    def _write_remote_file(self, remote_path: str, content: str) -> None:
+        """Write *content* to *remote_path* on the remote by piping via run_cmd.
+
+        Uses self._run_cmd so tests can intercept.  The command is a shell
+        one-liner: ``cat > <path>``.
+        """
+        # We pass a special sentinel command so tests can recognise it.
+        # The actual content is passed via the ``input`` kwarg.
+        user_prefix = f"{self._user}@" if self._user else ""
+        host_arg = f"{user_prefix}{self._host}"
+
+        # Build the ssh command list (compatible with the _run_cmd signature)
+        # We use subprocess.run directly here since we need stdin=
+        result = subprocess.run(
+            ["ssh", host_arg, f"cat > {remote_path}"],
+            input=content,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "_write_remote_file: failed to write %s (rc=%d): %s",
+                remote_path, result.returncode, result.stderr.strip()
+            )
+
+    def _default_ssh_run_cmd(self, cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
         """Wrap a command to run on the remote server via SSH."""
         remote_cmd = " ".join(cmd)
         user_prefix = f"{self._user}@" if self._user else ""

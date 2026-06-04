@@ -17,6 +17,15 @@ def _default_run_cmd(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, **kwargs)
 
 
+def _resolve_remote_path(raw: str, jobfile_name: str = "runs") -> str:
+    """Expand ~ and substitute {project} with jobfile name (slug)."""
+    slug = jobfile_name.replace(" ", "_").replace("/", "_") or "runs"
+    path = raw.format(project=slug)
+    # Tilde in remote paths is interpreted by the remote shell, leave as-is
+    # unless it would confuse rsync (rsync handles ~/... fine via SSH)
+    return path
+
+
 class SshBackend(Backend):
     """Backend that runs jobs on a remote host via SSH.
 
@@ -45,8 +54,11 @@ class SshBackend(Backend):
         self._server = server
         self._host = server_config.get("host", server)
         self._user = server_config.get("user")
-        self._remote_path = server_config.get("remote_path", f"/tmp/jobctl/{server}")
+        self._remote_path_template = server_config.get("remote_path", f"/tmp/jobctl/{server}")
         self._run_cmd = run_cmd or _default_run_cmd
+
+    def _remote_path(self, jobfile_name: str = "runs") -> str:
+        return _resolve_remote_path(self._remote_path_template, jobfile_name)
 
     # ------------------------------------------------------------------
     # Backend interface
@@ -54,7 +66,8 @@ class SshBackend(Backend):
 
     def submit(self, run: "Run", jobfile: "JobFile") -> SubmitResult:
         """Launch job on remote host via nohup; return PID as remote_job_id."""
-        remote_workdir = f"{self._remote_path}/{run.run_id}"
+        base = self._remote_path(jobfile.name if jobfile else "runs")
+        remote_workdir = f"{base}/{run.run_id}"
         stdout_path = f"{remote_workdir}/stdout.txt"
         stderr_path = f"{remote_workdir}/stderr.txt"
         exit_code_path = f"{remote_workdir}/exit_code.txt"
@@ -105,14 +118,15 @@ class SshBackend(Backend):
 
     def collect(self, run: "Run") -> CollectResult:
         """Rsync artifacts back and return paths + exit code."""
-        remote_workdir = run.workdir or f"{self._remote_path}/{run.run_id}"
+        remote_workdir = run.workdir or f"{self._remote_path()}/{run.run_id}"
 
         # Local mirror directory
         local_mirror = str(Path.home() / ".jobctl" / "runs" / run.run_id)
         Path(local_mirror).mkdir(parents=True, exist_ok=True)
 
         # rsync pull: remote -> local
-        remote_spec = f"{self._user}@{self._host}:{remote_workdir}/" if self._user else f"{self._host}:{remote_workdir}/"
+        # Use server SSH alias directly (honours ~/.ssh/config)
+        remote_spec = f"{self._host}:{remote_workdir}/"
         rsync_cmd = ["rsync", "-az", remote_spec, local_mirror + "/"]
         self._run_cmd(rsync_cmd)
 

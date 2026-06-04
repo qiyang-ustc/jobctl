@@ -1,0 +1,13 @@
+name: cluster-smoke
+command: >-
+  bash -c "echo metric=0.123 && sleep 5 && printf 'step,value\n1,0.1\n2,0.2\n3,0.123\n' > results.csv && echo done"
+
+backends:
+  - backend: ssh
+    server: oblix
+  - backend: slurm
+    server: hipster
+  - backend: local
+
+artifacts:
+  - "*.csv"
