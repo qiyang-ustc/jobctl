@@ -271,14 +271,19 @@ class Monitor:
         """
         servers_config: dict = self.config.get("servers", {})
         now_iso = datetime.now(timezone.utc).isoformat()
+        names = list(servers_config)
 
-        for name in servers_config:
+        # Probe all servers concurrently, off the event loop (SSH is blocking).
+        async def _probe(name: str) -> "Server | None":
             try:
-                snapshot: Server | None = self._prober.probe(name)
+                return await asyncio.to_thread(self._prober.probe, name)
             except Exception as exc:
                 logger.warning("Prober failed for server %s: %s", name, exc)
-                snapshot = None
+                return None
 
+        snapshots = await asyncio.gather(*[_probe(n) for n in names]) if names else []
+
+        for name, snapshot in zip(names, snapshots):
             if snapshot is not None:
                 # Server is reachable; persist updated snapshot
                 server = Server(

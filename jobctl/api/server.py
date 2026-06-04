@@ -109,6 +109,14 @@ def create_app(config: dict | None = None, start_monitor: bool = True) -> FastAP
         notifiers_factory=notifiers_factory,
     )
 
+    # Attach a real SSH prober when servers are configured (production). Tests
+    # construct Monitor directly with their own prober, or run with no servers /
+    # a long probe interval, so they keep the default no-op prober.
+    _servers_cfg = config.get("servers") or {}
+    if _servers_cfg:
+        from jobctl.monitor.prober import SshProber
+        monitor._prober = SshProber(_servers_cfg)
+
     if start_monitor:
         @asynccontextmanager
         async def _lifespan(application: FastAPI):
