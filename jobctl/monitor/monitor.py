@@ -386,6 +386,11 @@ class Monitor:
 
         Stuck = log has not grown for > stuck_timeout_seconds
                 AND heartbeat has not been updated for > stuck_timeout_seconds.
+
+        When no log mtime or heartbeat is available yet (e.g. first poll of
+        an SSH/SLURM job before stdout is locally mirrored), we fall back to
+        submitted_at / started_at so that a brand-new run is never immediately
+        declared stuck.
         """
         now = time.time()
         threshold = self._stuck_timeout
@@ -400,14 +405,36 @@ class Monitor:
                     last_mtime = Path(run.stdout_path).stat().st_mtime
                 except OSError:
                     last_mtime = None
-        if last_mtime is None or (now - last_mtime) > threshold:
+        if last_mtime is None:
+            # No log mtime available; use started_at / submitted_at as proxy
+            ref_ts: str | None = run.started_at or run.submitted_at
+            if ref_ts is not None:
+                try:
+                    ref_dt = datetime.fromisoformat(ref_ts)
+                    if (now - ref_dt.timestamp()) > threshold:
+                        log_stale = True
+                    # else: job only just started, not stale yet
+                except (ValueError, OSError):
+                    log_stale = True  # unparseable timestamp -> assume stale
+            # If ref_ts is also None, the run is brand-new; do not mark log stale
+        elif (now - last_mtime) > threshold:
             log_stale = True
 
         # Check heartbeat
         hb_stale = False
         last_hb = run.last_heartbeat
         if last_hb is None:
-            hb_stale = True
+            # No heartbeat yet; use started_at / submitted_at as proxy
+            ref_ts = run.started_at or run.submitted_at
+            if ref_ts is not None:
+                try:
+                    ref_dt = datetime.fromisoformat(ref_ts)
+                    if (now - ref_dt.timestamp()) > threshold:
+                        hb_stale = True
+                    # else: job only just started, not stale yet
+                except (ValueError, OSError):
+                    hb_stale = True
+            # If ref_ts is None, brand-new run; do not mark hb stale
         else:
             try:
                 hb_dt = datetime.fromisoformat(last_hb)
