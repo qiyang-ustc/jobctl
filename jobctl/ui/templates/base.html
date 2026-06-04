@@ -4,7 +4,25 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>{% block title %}jobctl{% endblock %}</title>
-  <link rel="stylesheet" href="/static/app.css?v=3"/>
+  <script>
+    /* Set theme before paint (no flash). Default: stored pref, else system. */
+    (function(){
+      var t = localStorage.getItem('jobctl_theme') ||
+              (window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+      document.documentElement.setAttribute('data-theme', t);
+      window.__toggleTheme = function(){
+        var cur = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', cur);
+        localStorage.setItem('jobctl_theme', cur);
+        var b = document.querySelector('.theme-btn'); if (b) b.textContent = cur === 'light' ? '☾' : '☀';
+      };
+    })();
+    document.addEventListener('DOMContentLoaded', function(){
+      var b = document.querySelector('.theme-btn');
+      if (b) b.textContent = document.documentElement.getAttribute('data-theme') === 'light' ? '☾' : '☀';
+    });
+  </script>
+  <link rel="stylesheet" href="/static/app.css?v=5"/>
   <script src="/static/htmx.min.js" defer></script>
   <script src="/static/i18n.js" defer></script>
 </head>
@@ -23,6 +41,8 @@
       <button class="lang-btn" data-lang="en">EN</button>
       <button class="lang-btn" data-lang="zh">中文</button>
     </div>
+    <button class="theme-btn" type="button" onclick="window.__toggleTheme()"
+            aria-label="Toggle light/dark theme" title="Toggle theme">☀</button>
   </nav>
 
   <main>
