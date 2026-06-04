@@ -482,7 +482,10 @@ class Monitor:
                         updates["stdout_path"] = collect.stdout_path
                     if collect.stderr_path:
                         updates["stderr_path"] = collect.stderr_path
-                    if collect.artifact_dir and run.workdir is None:
+                    if collect.artifact_dir:
+                        # Always update workdir to the local mirror returned by
+                        # collect() so that the artifact indexer (which uses
+                        # run.workdir to glob) finds the locally-rsync'd files.
                         updates["workdir"] = collect.artifact_dir
                     if collect.resource_summary:
                         updates["resource_summary"] = collect.resource_summary
