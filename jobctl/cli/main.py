@@ -542,8 +542,16 @@ def serve(
     """Start the jobctl FastAPI daemon (uvicorn)."""
     import uvicorn
     from jobctl.api.server import create_app
+    from jobctl.config import load_config as _load_config
 
-    config: dict = {}
+    # Load cluster.yaml so server configs (remote_path, account, partition, etc.)
+    # are available to backends at runtime.
+    _cfg = _load_config()
+    config: dict = {"servers": _cfg.servers}
+    if _cfg.db_path:
+        config["db_path"] = _cfg.db_path
+    if _cfg.run_dir:
+        config["run_dir"] = _cfg.run_dir
     if db_path:
         config["db_path"] = db_path
 
