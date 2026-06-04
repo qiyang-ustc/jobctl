@@ -9,22 +9,33 @@
           integrity="sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2uiTulQ0HkJAe5PfcgXYZziSBtTa8WnQee"
           crossorigin="anonymous"
           defer></script>
+  <script src="/static/i18n.js" defer></script>
 </head>
 <body>
 <div class="layout">
-  <header>
-    <a href="/" class="brand">jobctl</a>
-    <nav>
-      <a href="/">Dashboard</a>
-      <a href="/runs">Runs</a>
-      <a href="/jobfiles">Jobs</a>
-      <a href="/servers">Servers</a>
-    </nav>
-  </header>
+
+  <nav class="topnav" role="navigation">
+    <a href="/" class="topnav-logo">jobctl</a>
+    <div class="topnav-nav">
+      <a href="/" data-i18n="nav.dashboard">Dashboard</a>
+      <a href="/runs" data-i18n="nav.runs">Runs</a>
+      <a href="/jobfiles" data-i18n="nav.jobs">Jobs</a>
+      <a href="/servers" data-i18n="nav.servers">Servers</a>
+    </div>
+    <div class="lang-toggle" aria-label="Language toggle">
+      <button class="lang-btn" data-lang="en">EN</button>
+      <button class="lang-btn" data-lang="zh">中文</button>
+    </div>
+  </nav>
+
   <main>
     {% block content %}{% endblock %}
   </main>
-  <footer>jobctl v{{ version }}</footer>
+
+  <footer>
+    <span data-i18n="footer.label">jobctl</span> v{{ version }}
+  </footer>
+
 </div>
 </body>
 </html>

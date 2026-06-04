@@ -150,6 +150,7 @@ def create_app(config: dict | None = None, start_monitor: bool = True) -> FastAP
     # Expose the basename filter in templates
     templates.env.filters["basename"] = lambda p: Path(p).name if p else ""
     templates.env.filters["urlencode"] = lambda s: str(s).replace("/", "%2F") if s else ""
+    templates.env.filters["enumval"] = lambda v: getattr(v, "value", v)
     app.state.templates = templates
     app.state.version = jobctl.__version__
 

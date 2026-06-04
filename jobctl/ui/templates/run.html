@@ -2,57 +2,85 @@
 {% block title %}Run {{ run.run_id }} — jobctl{% endblock %}
 
 {% block content %}
-<div class="run-header">
-  <div>
-    <div class="flex-gap">
-      <h1>Run <span class="mono">{{ run.run_id }}</span></h1>
-      <span class="badge badge-{{ run.state }}">{{ run.state }}</span>
-      <span class="badge badge-{{ run.health }}">{{ run.health }}</span>
+
+{# ---- Hero Header ---- #}
+<div class="run-hero">
+  <div class="run-hero-title">
+    <span class="run-hero-id mono">{{ run.run_id }}</span>
+    <div class="run-hero-pills">
+      <span class="badge badge-{{ run.state | enumval | replace('_', '-') }}">{{ run.state | enumval }}</span>
+      <span class="badge badge-{{ run.health | enumval | replace('_', '-') }}">{{ run.health | enumval }}</span>
       {% if run.expectation_match %}
-      <span class="badge badge-{{ run.expectation_match | replace('_', '-') | replace('signal', '') | replace('--', '-') }}">
-        {{ run.expectation_match }}
-      </span>
+      <span class="badge badge-{{ run.expectation_match | enumval | replace('_', '-') }}">{{ run.expectation_match | enumval }}</span>
       {% endif %}
     </div>
-    <div class="run-meta flex-gap">
-      <span>JobFile: <a href="/jobfiles/{{ run.jobfile_id }}">{{ jobfile_name or run.jobfile_id }}</a></span>
-      {% if run.server %}<span>Server: {{ run.server }}</span>{% endif %}
-      {% if run.backend %}<span>Backend: {{ run.backend }}</span>{% endif %}
-      {% if run.submitted_at %}<span>Submitted: {{ run.submitted_at[:19] }}</span>{% endif %}
-      {% if run.finished_at %}<span>Finished: {{ run.finished_at[:19] }}</span>{% endif %}
-    </div>
   </div>
-  {% if run.state in ("running", "submitted", "pending") %}
-  <div style="margin-left:auto"
-       hx-get="/ui/poll?run_id={{ run.run_id }}"
+
+  {# HTMX live poll for active runs #}
+  {% if run.state | enumval in ("running", "submitted", "pending") %}
+  <div hx-get="/ui/poll?run_id={{ run.run_id }}"
        hx-trigger="every 5s"
-       hx-target="closest .run-header"
+       hx-target="closest .run-hero"
        hx-swap="outerHTML">
-    <span class="badge badge-running htmx-indicator">polling…</span>
+    <span class="badge badge-running htmx-indicator" data-i18n="label.polling">polling…</span>
   </div>
   {% endif %}
 </div>
 
-<div class="detail-grid">
+{# ---- Info Grid ---- #}
+<div class="run-info-grid mb-2">
+  <div class="run-info-item">
+    <div class="run-info-label" data-i18n="label.jobfile">JobFile</div>
+    <div class="run-info-value">
+      <a href="/jobfiles/{{ run.jobfile_id }}">{{ jobfile_name or run.jobfile_id }}</a>
+    </div>
+  </div>
+  {% if run.backend %}
+  <div class="run-info-item">
+    <div class="run-info-label" data-i18n="label.backend">Backend</div>
+    <div class="run-info-value">{{ run.backend }}</div>
+  </div>
+  {% endif %}
+  {% if run.server %}
+  <div class="run-info-item">
+    <div class="run-info-label" data-i18n="label.server">Server</div>
+    <div class="run-info-value">{{ run.server }}</div>
+  </div>
+  {% endif %}
+  {% if run.submitted_at %}
+  <div class="run-info-item">
+    <div class="run-info-label" data-i18n="label.submitted">Submitted</div>
+    <div class="run-info-value">{{ run.submitted_at[:19] }}</div>
+  </div>
+  {% endif %}
+  {% if run.finished_at %}
+  <div class="run-info-item">
+    <div class="run-info-label" data-i18n="label.finished">Finished</div>
+    <div class="run-info-value">{{ run.finished_at[:19] }}</div>
+  </div>
+  {% endif %}
+</div>
 
-  {# ---- Left column: params + resources ---- #}
+{# ---- Two-column: Params + Observation ---- #}
+<div class="detail-grid mb-2">
+
+  {# Left: Parameters + Resources #}
   <div>
     <div class="card mb-2">
-      <h3>Parameters</h3>
-      <div class="kv-grid">
+      <h3 data-i18n="label.params">Parameters</h3>
+      <div class="kv-grid mt-1">
         {% for k, v in run.params.items() %}
         <div class="kv-key">{{ k }}</div>
         <div class="kv-value">{{ v }}</div>
         {% else %}
-        <span class="text-muted">—</span>
+        <span class="text-muted" data-i18n="empty.params">No parameters defined.</span>
         {% endfor %}
       </div>
     </div>
-
     {% if run.resource_summary %}
     <div class="card">
-      <h3>Resources</h3>
-      <div class="kv-grid">
+      <h3 data-i18n="label.resources">Resources</h3>
+      <div class="kv-grid mt-1">
         {% for k, v in run.resource_summary.items() %}
         <div class="kv-key">{{ k }}</div>
         <div class="kv-value">{{ v }}</div>
@@ -62,13 +90,13 @@
     {% endif %}
   </div>
 
-  {# ---- Right column: observation card ---- #}
+  {# Right: Observation Card #}
   <div>
     {% if run.observation_card %}
     {% set card = run.observation_card %}
     <div class="obs-card">
-      <div class="obs-match">
-        Observation
+      <div class="obs-header">
+        <span data-i18n="section.obs">Observation</span>
         {% if card.expectation_match %}
         <span class="badge badge-{{ card.expectation_match | replace('_', '-') }}">{{ card.expectation_match }}</span>
         {% endif %}
@@ -77,21 +105,24 @@
       <div class="obs-interpretation">{{ card.interpretation }}</div>
       {% endif %}
       {% if card.recommended_next_action %}
-      <div class="obs-next-action">Next: {{ card.recommended_next_action }}</div>
+      <div class="obs-next">
+        <div class="obs-next-label" data-i18n="label.next">Next</div>
+        {{ card.recommended_next_action }}
+      </div>
       {% endif %}
       {% if card.key_evidence %}
-      <div class="obs-evidence mt-1">
-        <div class="text-muted text-sm mb-1">Key evidence:</div>
-        <ul style="list-style:disc; padding-left:1.2rem">
+      <div class="obs-evidence">
+        <div class="obs-evidence-label" data-i18n="label.evidence">Key evidence</div>
+        <div class="obs-chips">
           {% for e in card.key_evidence %}
-          <li>{{ e }}</li>
+          <span class="obs-chip">{{ e }}</span>
           {% endfor %}
-        </ul>
+        </div>
       </div>
       {% endif %}
     </div>
     {% else %}
-    <div class="card text-muted text-sm">No observation card yet.</div>
+    <div class="card text-muted text-sm" data-i18n="empty.obs">No observation card yet.</div>
     {% endif %}
   </div>
 
@@ -100,14 +131,16 @@
 <hr class="section-sep"/>
 
 {# ---- Logs ---- #}
-<h2>Logs</h2>
+<div class="section-header">
+  <span class="section-title" data-i18n="section.logs">Logs</span>
+</div>
 <div class="detail-grid mb-2">
-  <div>
-    <div class="log-label">stdout</div>
+  <div class="log-section">
+    <div class="log-section-title" data-i18n="label.stdout">stdout</div>
     <pre class="log-block">{{ stdout_tail or "(no stdout)" }}</pre>
   </div>
-  <div>
-    <div class="log-label">stderr</div>
+  <div class="log-section">
+    <div class="log-section-title" data-i18n="label.stderr">stderr</div>
     <pre class="log-block">{{ stderr_tail or "(no stderr)" }}</pre>
   </div>
 </div>
@@ -115,7 +148,11 @@
 <hr class="section-sep"/>
 
 {# ---- Artifacts ---- #}
-<h2>Artifacts ({{ artifacts | length }})</h2>
+<div class="section-header">
+  <span class="section-title" data-i18n="section.artifacts">Artifacts</span>
+  <span class="section-count">{{ artifacts | length }}</span>
+</div>
+
 {% if artifacts %}
 <div class="artifacts-grid mb-2">
   {% for art in artifacts %}
@@ -129,7 +166,7 @@
       <div class="artifact-name">{{ art.remote_path | basename }}</div>
       <div class="artifact-type">{{ art.type }}</div>
       {% if art.type == "csv" and art.preview and art.preview.head %}
-      <div class="mt-1" style="overflow-x:auto; max-height:120px; overflow-y:auto">
+      <div class="mt-1" style="overflow-x:auto; max-height:130px; overflow-y:auto">
         <table class="data-table">
           {% if art.preview.head %}
           <thead>
@@ -144,34 +181,45 @@
         </table>
       </div>
       {% if art.preview.shape %}
-      <div class="text-muted text-sm mt-1">{{ art.preview.shape[0] }} rows × {{ art.preview.shape[1] }} cols</div>
+      <div class="text-muted text-xs mt-1">
+        {{ art.preview.shape[0] }} × {{ art.preview.shape[1] }}
+        <span data-i18n="rows.x.cols">rows × cols</span>
+      </div>
       {% endif %}
       {% endif %}
-      <div class="text-muted text-sm mt-1">{{ art.size }} bytes</div>
+      <div class="text-muted text-xs mt-1">
+        {{ art.size }} <span data-i18n="label.bytes">bytes</span>
+      </div>
     </div>
   </div>
   {% endfor %}
 </div>
 {% else %}
-<div class="text-muted text-sm mb-2">No artifacts.</div>
+<div class="text-muted text-sm mb-2" data-i18n="empty.artifacts">No artifacts.</div>
 {% endif %}
 
-{# ---- Expectation Contract Criteria ---- #}
+{# ---- Expectation Contract ---- #}
 {% if contract %}
 <hr class="section-sep"/>
-<h2>Expectation Contract</h2>
-<div class="card">
-  <div class="text-muted text-sm mb-1">Contract v{{ contract.version }} — {{ contract.criteria | length }} criteria</div>
+<div class="section-header">
+  <span class="section-title" data-i18n="section.contract">Expectation Contract</span>
+</div>
+<div class="contract-card mb-2">
+  <div class="contract-header">
+    <span data-i18n="contract.v">Contract v</span>{{ contract.version }}
+    — {{ contract.criteria | length }}
+    <span data-i18n="contract.criteria">criteria</span>
+  </div>
   <table class="data-table">
     <thead>
       <tr>
-        <th>Criterion</th>
-        <th>Kind</th>
-        <th>Status</th>
-        <th>Strength</th>
+        <th data-i18n="col.criterion">Criterion</th>
+        <th data-i18n="col.kind">Kind</th>
+        <th data-i18n="col.status">Status</th>
+        <th data-i18n="col.strength">Strength</th>
         {% if per_criterion %}
-        <th>Result</th>
-        <th>Detail</th>
+        <th data-i18n="col.result">Result</th>
+        <th data-i18n="col.detail">Detail</th>
         {% endif %}
       </tr>
     </thead>

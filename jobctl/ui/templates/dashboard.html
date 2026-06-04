@@ -2,25 +2,28 @@
 {% block title %}Dashboard — jobctl{% endblock %}
 
 {% block content %}
-<h1>Dashboard</h1>
 
-{# ---- Server Health Cards ---- #}
-<h2>Servers</h2>
-<div class="grid-2 mb-2" id="server-cards"
+{# ---- Section: Servers ---- #}
+<div class="section-header">
+  <span class="section-title" data-i18n="section.servers">Servers</span>
+</div>
+
+<div class="servers-grid mb-2" id="server-cards"
      hx-get="/ui/poll?section=servers"
      hx-trigger="every 15s"
      hx-swap="innerHTML">
   {% for srv in servers %}
   <div class="server-card {{ 'online' if srv.online else 'offline' }}">
-    <div class="flex-gap">
+    <div class="server-header">
+      <span class="server-status-dot {{ 'online' if srv.online else 'offline' }}"></span>
       <span class="server-name">{{ srv.name }}</span>
       <span class="badge {{ 'badge-online' if srv.online else 'badge-offline' }}">
         {{ 'online' if srv.online else 'offline' }}
       </span>
-      <span class="badge">{{ srv.backend_type }}</span>
+      <span class="badge badge-neutral" style="background:var(--surface3);color:var(--text-muted)">{{ srv.backend_type }}</span>
     </div>
     {% if srv.last_heartbeat %}
-    <div class="server-meta">last seen {{ srv.last_heartbeat[:19] }}</div>
+    <div class="server-meta">{{ srv.last_heartbeat[:19] }}</div>
     {% endif %}
     {% if srv.note %}
     <div class="server-meta">{{ srv.note }}</div>
@@ -29,7 +32,7 @@
     <div class="server-resources">
       {% if srv.cpu %}
       <div class="resource-bar-wrap">
-        <div class="resource-label">CPU {{ (srv.cpu.pct or 0) | int }}%</div>
+        <div class="resource-label"><span>CPU</span><span>{{ (srv.cpu.pct or 0) | int }}%</span></div>
         <div class="resource-bar">
           <div class="resource-bar-fill {% if (srv.cpu.pct or 0) > 80 %}high{% elif (srv.cpu.pct or 0) > 60 %}med{% endif %}"
                style="width: {{ (srv.cpu.pct or 0) | int }}%"></div>
@@ -38,7 +41,7 @@
       {% endif %}
       {% if srv.mem %}
       <div class="resource-bar-wrap">
-        <div class="resource-label">Mem {{ (srv.mem.pct or 0) | int }}%</div>
+        <div class="resource-label"><span>Mem</span><span>{{ (srv.mem.pct or 0) | int }}%</span></div>
         <div class="resource-bar">
           <div class="resource-bar-fill {% if (srv.mem.pct or 0) > 80 %}high{% elif (srv.mem.pct or 0) > 60 %}med{% endif %}"
                style="width: {{ (srv.mem.pct or 0) | int }}%"></div>
@@ -47,7 +50,7 @@
       {% endif %}
       {% if srv.gpu %}
       <div class="resource-bar-wrap">
-        <div class="resource-label">GPU {{ (srv.gpu.pct or 0) | int }}%</div>
+        <div class="resource-label"><span>GPU</span><span>{{ (srv.gpu.pct or 0) | int }}%</span></div>
         <div class="resource-bar">
           <div class="resource-bar-fill {% if (srv.gpu.pct or 0) > 80 %}high{% elif (srv.gpu.pct or 0) > 60 %}med{% endif %}"
                style="width: {{ (srv.gpu.pct or 0) | int }}%"></div>
@@ -55,7 +58,7 @@
       </div>
       {% endif %}
       {% if srv.slurm_queue %}
-      <div class="server-meta mt-1" style="width:100%">
+      <div class="server-meta" style="width:100%">
         Slurm: {{ srv.slurm_queue.get('running', 0) }} running,
                {{ srv.slurm_queue.get('pending', 0) }} pending
       </div>
@@ -64,7 +67,7 @@
     {% endif %}
   </div>
   {% else %}
-  <div class="text-muted text-sm">No servers registered.</div>
+  <div class="text-muted text-sm" data-i18n="empty.servers">No servers registered.</div>
   {% endfor %}
 </div>
 

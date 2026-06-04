@@ -2,6 +2,8 @@
 {% block title %}{{ jobfile.name }} — jobctl{% endblock %}
 
 {% block content %}
+
+{# ---- Header ---- #}
 <div class="flex-gap mb-2">
   <h1>{{ jobfile.name }}</h1>
   <span class="badge">v{{ jobfile.version }}</span>
@@ -9,19 +11,25 @@
 
 <div class="detail-grid">
 
-  {# ---- Left: params schema + command ---- #}
+  {# ---- Left: command, params schema, metadata ---- #}
   <div>
+
     <div class="card mb-2">
-      <h3>Command Template</h3>
-      <pre class="log-block" style="max-height:80px">{{ jobfile.command_template }}</pre>
+      <h3 data-i18n="section.command">Command Template</h3>
+      <pre class="log-block mt-1" style="max-height:80px">{{ jobfile.command_template }}</pre>
     </div>
 
     <div class="card mb-2">
-      <h3>Parameters Schema</h3>
+      <h3 data-i18n="section.schema">Parameters Schema</h3>
       {% if jobfile.params_schema %}
-      <table class="data-table schema-table">
+      <table class="data-table schema-table mt-1">
         <thead>
-          <tr><th>Name</th><th>Type</th><th>Default</th><th>Required</th></tr>
+          <tr>
+            <th data-i18n="col.name">Name</th>
+            <th data-i18n="col.type">Type</th>
+            <th data-i18n="col.default">Default</th>
+            <th data-i18n="col.required">Required</th>
+          </tr>
         </thead>
         <tbody>
           {% for name, spec in jobfile.params_schema.items() %}
@@ -32,43 +40,55 @@
             <td>{{ 'yes' if (spec is mapping and spec.get('required')) else '—' }}</td>
           </tr>
           {% else %}
-          <tr><td colspan="4" class="text-muted">No parameters defined.</td></tr>
+          <tr><td colspan="4" class="text-muted" data-i18n="empty.params">No parameters defined.</td></tr>
           {% endfor %}
         </tbody>
       </table>
       {% else %}
-      <div class="text-muted text-sm">No parameters defined.</div>
+      <div class="text-muted text-sm mt-1" data-i18n="empty.params">No parameters defined.</div>
       {% endif %}
     </div>
 
     <div class="card">
-      <h3>Metadata</h3>
-      <div class="kv-grid">
-        <div class="kv-key">ID</div>
+      <h3 data-i18n="section.metadata">Metadata</h3>
+      <div class="kv-grid mt-1">
+        <div class="kv-key" data-i18n="meta.id">ID</div>
         <div class="kv-value mono">{{ jobfile.id }}</div>
-        <div class="kv-key">Source</div>
+        <div class="kv-key" data-i18n="meta.source">Source</div>
         <div class="kv-value mono">{{ jobfile.source_path or '—' }}</div>
-        <div class="kv-key">Hash</div>
+        <div class="kv-key" data-i18n="meta.hash">Hash</div>
         <div class="kv-value mono">{{ jobfile.content_hash[:16] }}…</div>
-        <div class="kv-key">Created</div>
+        <div class="kv-key" data-i18n="meta.created">Created</div>
         <div class="kv-value">{{ (jobfile.created_at or '')[:19] }}</div>
         {% if jobfile.artifact_patterns %}
-        <div class="kv-key">Artifacts</div>
+        <div class="kv-key" data-i18n="meta.artifacts">Artifacts</div>
         <div class="kv-value">{{ jobfile.artifact_patterns | join(', ') }}</div>
         {% endif %}
       </div>
     </div>
+
   </div>
 
-  {# ---- Right: contract versions ---- #}
+  {# ---- Right: expectation contract ---- #}
   <div>
     {% if contract %}
-    <div class="card mb-2">
-      <h3>Expectation Contract <span class="text-muted text-sm">v{{ contract.version }}</span></h3>
-      <div class="text-muted text-sm mb-1">{{ contract.criteria | length }} criteria · source: {{ contract.source }}</div>
+    <div class="contract-card mb-2">
+      <div class="contract-header">
+        <span data-i18n="section.contract">Expectation Contract</span>
+        v{{ contract.version }}
+        — {{ contract.criteria | length }}
+        <span data-i18n="contract.criteria">criteria</span>
+        ·
+        <span data-i18n="contract.source">source</span>: {{ contract.source }}
+      </div>
       <table class="data-table">
         <thead>
-          <tr><th>Criterion</th><th>Kind</th><th>Strength</th><th>Status</th></tr>
+          <tr>
+            <th data-i18n="col.criterion">Criterion</th>
+            <th data-i18n="col.kind">Kind</th>
+            <th data-i18n="col.strength">Strength</th>
+            <th data-i18n="col.status">Status</th>
+          </tr>
         </thead>
         <tbody>
           {% for cr in contract.criteria %}
@@ -79,13 +99,13 @@
             <td>{{ cr.status }}</td>
           </tr>
           {% else %}
-          <tr><td colspan="4" class="text-muted">No criteria.</td></tr>
+          <tr><td colspan="4" class="text-muted" data-i18n="empty.criteria">No criteria.</td></tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
     {% else %}
-    <div class="card mb-2 text-muted text-sm">No expectation contract yet.</div>
+    <div class="card mb-2 text-muted text-sm" data-i18n="empty.contract">No expectation contract yet.</div>
     {% endif %}
   </div>
 
@@ -94,33 +114,37 @@
 <hr class="section-sep"/>
 
 {# ---- Historical Runs ---- #}
-<h2>Historical Runs ({{ runs | length }})</h2>
+<div class="section-header">
+  <span class="section-title" data-i18n="section.history">Historical Runs</span>
+  <span class="section-count">{{ runs | length }}</span>
+</div>
+
 {% if runs %}
 <table class="data-table mb-2">
   <thead>
     <tr>
-      <th>Run ID</th>
-      <th>State</th>
-      <th>Match</th>
-      <th>Backend</th>
-      <th>Server</th>
-      <th>Submitted</th>
-      <th>Params</th>
+      <th data-i18n="col.runid">Run ID</th>
+      <th data-i18n="col.state">State</th>
+      <th data-i18n="col.match">Match</th>
+      <th data-i18n="col.backend">Backend</th>
+      <th data-i18n="col.server">Server</th>
+      <th data-i18n="col.submitted">Submitted</th>
+      <th data-i18n="col.params">Params</th>
     </tr>
   </thead>
   <tbody>
     {% for run in runs %}
     <tr>
       <td><a href="/runs/{{ run.run_id }}" class="mono">{{ run.run_id }}</a></td>
-      <td><span class="badge badge-{{ run.state }}">{{ run.state }}</span></td>
+      <td><span class="badge badge-{{ run.state | enumval | replace('_', '-') }}">{{ run.state | enumval }}</span></td>
       <td>
         {% if run.expectation_match %}
-        <span class="badge badge-{{ run.expectation_match | replace('_', '-') }}">{{ run.expectation_match }}</span>
+        <span class="badge badge-{{ run.expectation_match | enumval | replace('_', '-') }}">{{ run.expectation_match | enumval }}</span>
         {% else %}—{% endif %}
       </td>
       <td>{{ run.backend or '—' }}</td>
       <td>{{ run.server or '—' }}</td>
-      <td>{{ (run.submitted_at or '')[:16] }}</td>
+      <td class="tabnum">{{ (run.submitted_at or '')[:16] }}</td>
       <td class="text-sm mono">
         {% for k, v in run.params.items() %}{{ k }}={{ v }}{% if not loop.last %}, {% endif %}{% endfor %}
       </td>
@@ -129,7 +153,7 @@
   </tbody>
 </table>
 {% else %}
-<div class="text-muted text-sm mb-2">No runs yet.</div>
+<div class="text-muted text-sm mb-2" data-i18n="empty.runs">No runs yet.</div>
 {% endif %}
 
 {% endblock %}
