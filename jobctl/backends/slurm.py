@@ -109,7 +109,7 @@ class SlurmBackend(Backend):
 
         # Expand ~ to absolute path on remote so SLURM #SBATCH directives work
         # (SLURM does not expand ~ in --output/--error paths)
-        abs_result = self._run_cmd(["sh", "-c", f"echo {workdir}"])
+        abs_result = self._run_cmd(["echo", workdir])
         abs_workdir = abs_result.stdout.strip() if abs_result.stdout.strip() else workdir
         workdir = abs_workdir
 
