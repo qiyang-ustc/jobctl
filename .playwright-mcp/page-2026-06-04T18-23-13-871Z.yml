@@ -1,0 +1,141 @@
+- generic [ref=e2]:
+  - navigation [ref=e3]:
+    - link "jobctl //" [ref=e4] [cursor=pointer]:
+      - /url: /
+    - generic [ref=e5]:
+      - link "Dashboard" [ref=e6] [cursor=pointer]:
+        - /url: /
+      - link "Runs" [ref=e7] [cursor=pointer]:
+        - /url: /runs
+      - link "Jobs" [ref=e8] [cursor=pointer]:
+        - /url: /jobfiles
+      - link "Servers" [ref=e9] [cursor=pointer]:
+        - /url: /servers
+    - generic "Language toggle" [ref=e10]:
+      - button "EN" [ref=e11] [cursor=pointer]
+      - button "中文" [ref=e12] [cursor=pointer]
+  - main [ref=e13]:
+    - generic [ref=e15]:
+      - generic [ref=e16]: run-e483c45da10e
+      - generic [ref=e17]:
+        - generic [ref=e18]: completed
+        - generic [ref=e19]: ok
+        - generic [ref=e20]: inconclusive
+    - generic [ref=e21]:
+      - generic [ref=e22]:
+        - generic [ref=e23]: JobFile
+        - link "audit-job" [ref=e25] [cursor=pointer]:
+          - /url: /jobfiles/jf-5bae0ab333c286e2
+      - generic [ref=e26]:
+        - generic [ref=e27]: Backend
+        - generic [ref=e28]: local
+      - generic [ref=e29]:
+        - generic [ref=e30]: Submitted
+        - generic [ref=e31]: 2026-06-04T18:08:34
+      - generic [ref=e32]:
+        - generic [ref=e33]: Finished
+        - generic [ref=e34]: 2026-06-04T18:08:40
+    - generic [ref=e35]:
+      - generic [ref=e37]:
+        - heading "Parameters" [level=3] [ref=e38]
+        - generic [ref=e39]:
+          - generic [ref=e40]: script
+          - generic [ref=e41]: /private/tmp/jctl_audit/job.py
+      - generic [ref=e43]:
+        - generic [ref=e44]:
+          - generic [ref=e45]: Observation
+          - generic [ref=e46]: inconclusive
+        - generic [ref=e47]: Run result is inconclusive; some criteria could not be evaluated (missing or unparsable artifacts).
+        - generic [ref=e48]:
+          - generic [ref=e49]: Next
+          - text: Check that all expected artifacts were produced and retry if needed.
+    - separator [ref=e50]
+    - generic [ref=e52]: Logs
+    - generic [ref=e53]:
+      - generic [ref=e54]:
+        - generic [ref=e55]: stdout
+        - generic [ref=e56]: energy=-0.6612 done
+      - generic [ref=e57]:
+        - generic [ref=e58]: stderr
+        - generic [ref=e59]: (no stderr)
+    - separator [ref=e60]
+    - generic [ref=e61]:
+      - generic [ref=e62]: Artifacts
+      - generic [ref=e63]: "2"
+    - generic [ref=e64]:
+      - generic [ref=e66]:
+        - generic [ref=e67]: energy.csv
+        - generic [ref=e68]: csv
+        - table [ref=e70]:
+          - rowgroup [ref=e71]:
+            - row "step E" [ref=e72]:
+              - columnheader "step" [ref=e73]
+              - columnheader "E" [ref=e74]
+          - rowgroup [ref=e75]:
+            - row "0 -0.6" [ref=e76]:
+              - cell "0" [ref=e77]
+              - cell "-0.6" [ref=e78]
+            - row "1 -0.61" [ref=e79]:
+              - cell "1" [ref=e80]
+              - cell "-0.61" [ref=e81]
+            - row "2 -0.62" [ref=e82]:
+              - cell "2" [ref=e83]
+              - cell "-0.62" [ref=e84]
+            - row "3 -0.63" [ref=e85]:
+              - cell "3" [ref=e86]
+              - cell "-0.63" [ref=e87]
+        - generic [ref=e88]: 4 × 2 rows × cols
+        - generic [ref=e89]: 43 bytes
+      - generic [ref=e90]:
+        - img "/Users/yangqi/.jobctl/runs/run-e483c45da10e/plot.png" [ref=e91]
+        - generic [ref=e92]:
+          - generic [ref=e93]: plot.png
+          - generic [ref=e94]: image
+          - generic [ref=e95]: 127 bytes
+    - separator [ref=e96]
+    - generic [ref=e98]: Expectation Contract
+    - generic [ref=e99]:
+      - generic [ref=e100]: Contract v1 — 4 criteria
+      - table [ref=e101]:
+        - rowgroup [ref=e102]:
+          - row "Criterion Kind Status Strength Result Detail" [ref=e103]:
+            - columnheader "Criterion" [ref=e104]
+            - columnheader "Kind" [ref=e105]
+            - columnheader "Status" [ref=e106]
+            - columnheader "Strength" [ref=e107]
+            - columnheader "Result" [ref=e108]
+            - columnheader "Detail" [ref=e109]
+        - rowgroup [ref=e110]:
+          - row "No NaN values in stdout, stderr, or log files absence proposed 1 PASS Pattern 'NaN' not found (pass)" [ref=e111]:
+            - cell "No NaN values in stdout, stderr, or log files" [ref=e112]
+            - cell "absence" [ref=e113]:
+              - generic [ref=e114]: absence
+            - cell "proposed" [ref=e115]
+            - cell "1" [ref=e116]
+            - cell "PASS" [ref=e117]
+            - cell "Pattern 'NaN' not found (pass)" [ref=e118]
+          - row "No Python Traceback in stdout or stderr absence proposed 1 PASS Pattern 'Traceback' not found (pass)" [ref=e119]:
+            - cell "No Python Traceback in stdout or stderr" [ref=e120]
+            - cell "absence" [ref=e121]:
+              - generic [ref=e122]: absence
+            - cell "proposed" [ref=e123]
+            - cell "1" [ref=e124]
+            - cell "PASS" [ref=e125]
+            - cell "Pattern 'Traceback' not found (pass)" [ref=e126]
+          - row "No CUDA error in stdout or stderr absence proposed 1 PASS Pattern 'CUDA error' not found (pass)" [ref=e127]:
+            - cell "No CUDA error in stdout or stderr" [ref=e128]
+            - cell "absence" [ref=e129]:
+              - generic [ref=e130]: absence
+            - cell "proposed" [ref=e131]
+            - cell "1" [ref=e132]
+            - cell "PASS" [ref=e133]
+            - cell "Pattern 'CUDA error' not found (pass)" [ref=e134]
+          - 'row "Expectation from JobFile: no NaN in logs; no Traceback pattern proposed 1 FAIL No pattern specified" [ref=e135]':
+            - 'cell "Expectation from JobFile: no NaN in logs; no Traceback" [ref=e136]'
+            - cell "pattern" [ref=e137]:
+              - generic [ref=e138]: pattern
+            - cell "proposed" [ref=e139]
+            - cell "1" [ref=e140]
+            - cell "FAIL" [ref=e141]
+            - cell "No pattern specified" [ref=e142]
+  - contentinfo [ref=e143]: jobctl v0.1.0

@@ -1,0 +1,1 @@
+[      31ms] [ERROR] Failed to find a valid digest in the 'integrity' attribute for resource 'https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js' with computed SHA-384 integrity 'ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2'. The resource has been blocked. @ http://127.0.0.1:7421/runs/run-e483c45da10e:0
