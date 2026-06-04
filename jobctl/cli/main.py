@@ -96,6 +96,28 @@ app.add_typer(expect_app, name="expect")
 
 _TERMINAL_STATES = {"completed", "failed", "cancelled", "stuck", "timeout"}
 
+# How long `run --wait` / `await` block before giving up (12 hours) — long
+# enough for real cluster jobs; override with --timeout.
+_WAIT_TIMEOUT_DEFAULT = 12 * 60 * 60
+
+# Terminal state -> process exit code (for the waiting paths). Exit code means
+# "did the job RUN to completion" (operational); the observation card's
+# expectation_match means "is the result GOOD" (scientific). So `completed` is
+# 0 regardless of usable/weak/bad, and `jobctl run --wait && next` only
+# short-circuits on an operational failure.
+_EXIT_FOR_STATE = {
+    "completed": 0,
+    "failed": 2,
+    "cancelled": 3,
+    "stuck": 4,
+    "timeout": 124,   # job hit its time limit (matches timeout(1)'s convention)
+}
+
+
+def _exit_code_for(state) -> int:
+    """Map a terminal run state to a process exit code (unknown -> 1)."""
+    return _EXIT_FOR_STATE.get(str(state), 1)
+
 # ---------------------------------------------------------------------------
 # run
 # ---------------------------------------------------------------------------
@@ -114,6 +136,7 @@ def run(
     time_limit: Annotated[Optional[str], typer.Option("--time", help="SLURM time limit (e.g. 00:11:00)")] = None,
     partition: Annotated[Optional[str], typer.Option("--partition", help="SLURM partition")] = None,
     account: Annotated[Optional[str], typer.Option("--account", help="SLURM account")] = None,
+    timeout: Annotated[float, typer.Option("--timeout", help="Seconds --wait blocks before giving up")] = _WAIT_TIMEOUT_DEFAULT,
     json_out: Annotated[bool, typer.Option("--json", help="Output JSON")] = False,
 ):
     """Submit a job. --wait blocks until done and prints the observation card.
@@ -198,10 +221,10 @@ def run(
     if wait:
         # Block until terminal, then print the final run dict (with observation card)
         try:
-            final = client.await_run(run_id, poll_interval=0.5, timeout=300)
+            final = client.await_run(run_id, poll_interval=0.5, timeout=timeout)
         except TimeoutError:
-            typer.echo(f"Timeout waiting for run {run_id}", err=True)
-            raise typer.Exit(1)
+            typer.echo(f"Timeout waiting for run {run_id} (waited {timeout:g}s)", err=True)
+            raise typer.Exit(124)
 
         # Build output: prefer observation_card if available, else full run dict
         card = final.get("observation_card")
@@ -229,6 +252,9 @@ def run(
                         typer.echo(f"    - {a.get('name', a)}")
             else:
                 typer.echo(f"  backend: {final.get('backend')}  server: {final.get('server')}")
+
+        # Exit code reflects whether the job RAN (operational), not result quality.
+        raise typer.Exit(_exit_code_for(final.get("state")))
     else:
         # Background mode — print {run_id} immediately
         if json_out:
@@ -244,16 +270,18 @@ def run(
 @app.command(name="await")
 def await_cmd(
     run_id: Annotated[str, typer.Argument(help="Run ID to wait for")],
-    timeout: Annotated[float, typer.Option("--timeout", help="Seconds to wait")] = 300.0,
+    timeout: Annotated[float, typer.Option("--timeout", help="Seconds to wait before giving up")] = _WAIT_TIMEOUT_DEFAULT,
     json_out: Annotated[bool, typer.Option("--json", help="Output JSON")] = False,
 ):
-    """Block until a run reaches a terminal state, then print the result."""
+    """Block until a run reaches a terminal state, then print the result.
+
+    Exit code: 0 completed · 2 failed · 3 cancelled · 4 stuck · 124 timeout."""
     client = _get_client()
     try:
         final = client.await_run(run_id, poll_interval=0.2, timeout=timeout)
     except TimeoutError:
-        typer.echo(f"Timeout waiting for run {run_id}", err=True)
-        raise typer.Exit(1)
+        typer.echo(f"Timeout waiting for run {run_id} (waited {timeout:g}s)", err=True)
+        raise typer.Exit(124)
 
     card = final.get("observation_card")
     output_obj = card if (card and isinstance(card, dict)) else final
@@ -270,6 +298,8 @@ def await_cmd(
             typer.echo(json.dumps(card, indent=2, default=str))
         else:
             _print_pretty(final)
+
+    raise typer.Exit(_exit_code_for(final.get("state")))
 
 
 # ---------------------------------------------------------------------------

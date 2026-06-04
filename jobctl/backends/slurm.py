@@ -262,7 +262,7 @@ class SlurmBackend(Backend):
         partition = ov.get("partition", cfg.get("partition"))
         if partition:
             req["partition"] = partition
-        req["time"] = ov.get("time", cfg.get("time", "00:05:00"))
+        req["time"] = ov.get("time", cfg.get("time", "12:00:00"))
         req["mem"] = ov.get("mem", cfg.get("mem", "1G"))
         # accept either 'cpus' (CLI/override) or 'cpus_per_task' (server config)
         req["cpus"] = ov.get("cpus", ov.get("cpus_per_task", cfg.get("cpus_per_task", 1)))
