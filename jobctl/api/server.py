@@ -1,4 +1,4 @@
-"""FastAPI daemon: REST endpoints + monitor startup.
+"""FastAPI daemon: REST endpoints + monitor startup + Web UI routes.
 
 Endpoints:
     GET  /health
@@ -19,6 +19,14 @@ Endpoints:
     POST /expect/propose        — propose new criteria from feedback
     GET  /memory/query          — query run memory
 
+    Web UI (HTML):
+    GET  /                          — dashboard (server cards + run buckets)
+    GET  /runs/{id}                 — run detail (logs, artifacts, observation card, criteria)
+    GET  /jobfiles/{id}             — jobfile detail (schema, runs, contract)
+    GET  /ui/poll                   — HTMX poll partial
+    GET  /ui/artifact-thumb         — serve artifact image thumbnail
+    /static/*                       — static assets
+
 Usage:
     app = create_app(config={...}, start_monitor=True)
     # or
@@ -27,6 +35,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
 import uuid
@@ -37,7 +46,9 @@ from typing import Any
 from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
 import jobctl
 
@@ -124,6 +135,23 @@ def create_app(config: dict | None = None, start_monitor: bool = True) -> FastAP
     app.state.analyzer = analyzer
     app.state.monitor = monitor
     app.state.run_dir = run_dir
+
+    # ------------------------------------------------------------------
+    # Mount static files and set up Jinja2 templates
+    # ------------------------------------------------------------------
+    _UI_DIR = Path(__file__).parent.parent / "ui"
+    _STATIC_DIR = _UI_DIR / "static"
+    _TEMPLATES_DIR = _UI_DIR / "templates"
+
+    if _STATIC_DIR.exists():
+        app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
+    templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+    # Expose the basename filter in templates
+    templates.env.filters["basename"] = lambda p: Path(p).name if p else ""
+    templates.env.filters["urlencode"] = lambda s: str(s).replace("/", "%2F") if s else ""
+    app.state.templates = templates
+    app.state.version = jobctl.__version__
 
     # ------------------------------------------------------------------
     # Register routes
@@ -332,6 +360,12 @@ def _register_routes(app: FastAPI) -> None:
         run = store.get_run(run_id)
         if run is None:
             raise HTTPException(status_code=404, detail="Run not found")
+
+        # Content negotiation: HTML for browsers, JSON for API clients
+        accept = request.headers.get("accept", "")
+        if "text/html" in accept and "application/json" not in accept:
+            return await _ui_run_detail_impl(run_id, request)
+
         return _run_to_dict(run)
 
     @app.post("/runs/{run_id}/cancel")
@@ -601,6 +635,329 @@ def _register_routes(app: FastAPI) -> None:
 
         store = _store(request)
         return query(store, jobfile_id=jobfile_id, name=name)
+
+    # ------------------------------------------------------------------
+    # Web UI routes
+    # ------------------------------------------------------------------
+
+    @app.get("/", response_class=HTMLResponse)
+    async def ui_dashboard(request: Request):
+        """Dashboard: server health cards + run buckets."""
+        store = _store(request)
+        templates = request.app.state.templates
+
+        servers = store.list_servers()
+        all_runs = store.list_runs()
+
+        # Augment runs with jobfile name (for display)
+        jf_cache: dict[str, str] = {}
+        for run in all_runs:
+            if run.jobfile_id not in jf_cache:
+                jf = store.get_jobfile(run.jobfile_id)
+                jf_cache[run.jobfile_id] = jf.name if jf else run.jobfile_id
+
+        def _augment(run):
+            run.__dict__["jobfile_name"] = jf_cache.get(run.jobfile_id, "")
+            run.__dict__["expectation_match"] = (
+                run.expectation_match.value
+                if hasattr(run.expectation_match, "value")
+                else run.expectation_match
+            )
+            return run
+
+        for run in all_runs:
+            _augment(run)
+
+        # Build buckets
+        running   = [r for r in all_runs if r.state.value in ("running", "submitted")]
+        queued    = [r for r in all_runs if r.state.value == "pending"]
+        stuck     = [r for r in all_runs if r.state.value == "stuck"]
+        weak      = [r for r in all_runs if r.expectation_match == "weak_signal"]
+        completed = [r for r in all_runs if r.state.value == "completed" and r.expectation_match != "weak_signal"]
+        failed    = [r for r in all_runs if r.state.value in ("failed", "cancelled", "timeout")]
+
+        class Buckets:
+            pass
+
+        buckets = Buckets()
+        buckets.running   = running
+        buckets.queued    = queued
+        buckets.stuck     = stuck
+        buckets.weak      = weak
+        buckets.completed = completed
+        buckets.failed    = failed
+
+        return templates.TemplateResponse(
+            request,
+            "dashboard.html",
+            {
+                "servers": servers,
+                "buckets": buckets,
+                "version": request.app.state.version,
+            },
+        )
+
+    async def _ui_run_detail_impl(run_id: str, request: Request) -> HTMLResponse:
+        """Render the run detail HTML page (helper, called with content negotiation)."""
+        store = _store(request)
+        templates = request.app.state.templates
+
+        run = store.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        jf = store.get_jobfile(run.jobfile_id)
+        jobfile_name = jf.name if jf else run.jobfile_id
+
+        # Read log tails
+        stdout_tail = ""
+        stderr_tail = ""
+        if run.stdout_path and Path(run.stdout_path).exists():
+            try:
+                lines = Path(run.stdout_path).read_text(errors="replace").splitlines()
+                stdout_tail = "\n".join(lines[-100:])
+            except OSError:
+                pass
+        if run.stderr_path and Path(run.stderr_path).exists():
+            try:
+                lines = Path(run.stderr_path).read_text(errors="replace").splitlines()
+                stderr_tail = "\n".join(lines[-100:])
+            except OSError:
+                pass
+
+        artifacts = store.list_artifacts(run_id)
+
+        # Contract and per-criterion evaluation
+        contract = store.get_contract(run.jobfile_id) if run.jobfile_id else None
+
+        # Build per-criterion map from observation card if present
+        per_criterion_map: dict[str, Any] = {}
+        per_criterion: list[dict] = []
+        if run.observation_card and contract:
+            card_criteria = run.observation_card.get("per_criterion", [])
+            for pc in card_criteria:
+                per_criterion.append(pc)
+                if "id" in pc:
+                    per_criterion_map[pc["id"]] = pc
+
+        # Normalize state/health/match for template use
+        run_state = run.state.value if hasattr(run.state, "value") else run.state
+        run_health = run.health.value if hasattr(run.health, "value") else run.health
+        run_match = (
+            run.expectation_match.value
+            if hasattr(run.expectation_match, "value")
+            else run.expectation_match
+        )
+
+        # Build a plain dict for the template so attribute access is easy
+        run_dict = {
+            "run_id": run.run_id,
+            "jobfile_id": run.jobfile_id,
+            "state": run_state,
+            "health": run_health,
+            "expectation_match": run_match,
+            "params": run.params,
+            "resource_summary": run.resource_summary,
+            "submitted_at": run.submitted_at,
+            "started_at": run.started_at,
+            "finished_at": run.finished_at,
+            "backend": run.backend,
+            "server": run.server,
+            "observation_card": run.observation_card,
+        }
+
+        # Normalize artifact types for template
+        artifact_dicts = []
+        for art in artifacts:
+            artifact_dicts.append({
+                "id": art.id,
+                "run_id": art.run_id,
+                "remote_path": art.remote_path,
+                "local_path": art.local_path,
+                "type": art.type.value if hasattr(art.type, "value") else art.type,
+                "size": art.size,
+                "checksum": art.checksum,
+                "preview": art.preview,
+                "created_at": art.created_at,
+            })
+
+        return templates.TemplateResponse(
+            request,
+            "run.html",
+            {
+                "run": _DictObj(run_dict),
+                "jobfile_name": jobfile_name,
+                "stdout_tail": stdout_tail,
+                "stderr_tail": stderr_tail,
+                "artifacts": [_DictObj(a) for a in artifact_dicts],
+                "contract": contract,
+                "per_criterion": per_criterion,
+                "per_criterion_map": per_criterion_map,
+                "version": request.app.state.version,
+            },
+        )
+
+    @app.get("/jobfiles/{jobfile_id}", response_class=HTMLResponse)
+    async def ui_jobfile_detail(jobfile_id: str, request: Request):
+        """JobFile detail: params schema, historical runs, contract versions."""
+        store = _store(request)
+        templates = request.app.state.templates
+
+        jf = store.get_jobfile(jobfile_id)
+        if jf is None:
+            raise HTTPException(status_code=404, detail="JobFile not found")
+
+        runs = store.list_runs(jobfile_id=jobfile_id)
+        contract = store.get_contract(jobfile_id)
+
+        # Normalize run state/match for template
+        run_objs = []
+        for run in runs:
+            run_objs.append(_DictObj({
+                "run_id": run.run_id,
+                "state": run.state.value if hasattr(run.state, "value") else run.state,
+                "health": run.health.value if hasattr(run.health, "value") else run.health,
+                "expectation_match": (
+                    run.expectation_match.value
+                    if hasattr(run.expectation_match, "value")
+                    else run.expectation_match
+                ),
+                "params": run.params,
+                "backend": run.backend,
+                "server": run.server,
+                "submitted_at": run.submitted_at,
+                "finished_at": run.finished_at,
+            }))
+
+        return templates.TemplateResponse(
+            request,
+            "jobfile.html",
+            {
+                "jobfile": jf,
+                "runs": run_objs,
+                "contract": contract,
+                "version": request.app.state.version,
+            },
+        )
+
+    @app.get("/ui/poll", response_class=HTMLResponse)
+    async def ui_poll(
+        request: Request,
+        run_id: str | None = Query(default=None),
+        section: str | None = Query(default=None),
+    ):
+        """HTMX poll partial — returns updated fragments."""
+        store = _store(request)
+        templates = request.app.state.templates
+
+        if run_id:
+            # Return a run-state fragment for a specific run
+            run = store.get_run(run_id)
+            if run is None:
+                return HTMLResponse(content=f'<span class="text-muted">Run {run_id} not found</span>')
+
+            run_state = run.state.value if hasattr(run.state, "value") else run.state
+            run_health = run.health.value if hasattr(run.health, "value") else run.health
+            run_match = (
+                run.expectation_match.value
+                if hasattr(run.expectation_match, "value")
+                else run.expectation_match
+            )
+            html = (
+                f'<div class="flex-gap">'
+                f'<h1>Run <span class="mono">{run.run_id}</span></h1>'
+                f'<span class="badge badge-{run_state}">{run_state}</span>'
+                f'<span class="badge badge-{run_health}">{run_health}</span>'
+                f'</div>'
+            )
+            return HTMLResponse(content=html)
+
+        # Default: return run buckets fragment
+        all_runs = store.list_runs()
+        jf_cache: dict[str, str] = {}
+        for run in all_runs:
+            if run.jobfile_id not in jf_cache:
+                jf = store.get_jobfile(run.jobfile_id)
+                jf_cache[run.jobfile_id] = jf.name if jf else run.jobfile_id
+
+        for run in all_runs:
+            run.__dict__["jobfile_name"] = jf_cache.get(run.jobfile_id, "")
+            run.__dict__["expectation_match"] = (
+                run.expectation_match.value
+                if hasattr(run.expectation_match, "value")
+                else run.expectation_match
+            )
+
+        running   = [r for r in all_runs if r.state.value in ("running", "submitted")]
+        queued    = [r for r in all_runs if r.state.value == "pending"]
+        stuck     = [r for r in all_runs if r.state.value == "stuck"]
+        weak      = [r for r in all_runs if r.expectation_match == "weak_signal"]
+        completed = [r for r in all_runs if r.state.value == "completed" and r.expectation_match != "weak_signal"]
+        failed    = [r for r in all_runs if r.state.value in ("failed", "cancelled", "timeout")]
+
+        class Buckets:
+            pass
+
+        buckets = Buckets()
+        buckets.running   = running
+        buckets.queued    = queued
+        buckets.stuck     = stuck
+        buckets.weak      = weak
+        buckets.completed = completed
+        buckets.failed    = failed
+
+        return templates.TemplateResponse(
+            request,
+            "partials/buckets.html",
+            {
+                "buckets": buckets,
+                "version": request.app.state.version,
+            },
+        )
+
+    @app.get("/ui/artifact-thumb")
+    async def ui_artifact_thumb(
+        request: Request,
+        path: str = Query(default=""),
+    ):
+        """Serve artifact image by local path (base64-inlined or raw)."""
+        if not path:
+            raise HTTPException(status_code=400, detail="path required")
+
+        fp = Path(path)
+        if not fp.exists() or not fp.is_file():
+            raise HTTPException(status_code=404, detail="Artifact not found")
+
+        suffix = fp.suffix.lower()
+        media_map = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".gif": "image/gif",
+            ".svg": "image/svg+xml",
+            ".webp": "image/webp",
+        }
+        media_type = media_map.get(suffix, "application/octet-stream")
+
+        try:
+            data = fp.read_bytes()
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+
+        return Response(content=data, media_type=media_type)
+
+
+# ---------------------------------------------------------------------------
+# Helper: dict-backed object for Jinja2 attribute access
+# ---------------------------------------------------------------------------
+
+class _DictObj:
+    """Wrap a dict so Jinja2 can use attribute-style access (obj.key)."""
+    def __init__(self, d: dict) -> None:
+        self.__dict__.update(d)
+
+    def __getattr__(self, item: str):
+        return None  # graceful default for missing keys
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title %}{{ jobfile.name }} — jobctl{% endblock %}
+
+{% block content %}
+<div class="flex-gap mb-2">
+  <h1>{{ jobfile.name }}</h1>
+  <span class="badge">v{{ jobfile.version }}</span>
+</div>
+
+<div class="detail-grid">
+
+  {# ---- Left: params schema + command ---- #}
+  <div>
+    <div class="card mb-2">
+      <h3>Command Template</h3>
+      <pre class="log-block" style="max-height:80px">{{ jobfile.command_template }}</pre>
+    </div>
+
+    <div class="card mb-2">
+      <h3>Parameters Schema</h3>
+      {% if jobfile.params_schema %}
+      <table class="data-table schema-table">
+        <thead>
+          <tr><th>Name</th><th>Type</th><th>Default</th><th>Required</th></tr>
+        </thead>
+        <tbody>
+          {% for name, spec in jobfile.params_schema.items() %}
+          <tr>
+            <td class="schema-key">{{ name }}</td>
+            <td>{{ spec.get('type', '—') if spec is mapping else '—' }}</td>
+            <td class="mono">{{ spec.get('default', '—') if spec is mapping else spec }}</td>
+            <td>{{ 'yes' if (spec is mapping and spec.get('required')) else '—' }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4" class="text-muted">No parameters defined.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div class="text-muted text-sm">No parameters defined.</div>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h3>Metadata</h3>
+      <div class="kv-grid">
+        <div class="kv-key">ID</div>
+        <div class="kv-value mono">{{ jobfile.id }}</div>
+        <div class="kv-key">Source</div>
+        <div class="kv-value mono">{{ jobfile.source_path or '—' }}</div>
+        <div class="kv-key">Hash</div>
+        <div class="kv-value mono">{{ jobfile.content_hash[:16] }}…</div>
+        <div class="kv-key">Created</div>
+        <div class="kv-value">{{ (jobfile.created_at or '')[:19] }}</div>
+        {% if jobfile.artifact_patterns %}
+        <div class="kv-key">Artifacts</div>
+        <div class="kv-value">{{ jobfile.artifact_patterns | join(', ') }}</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {# ---- Right: contract versions ---- #}
+  <div>
+    {% if contract %}
+    <div class="card mb-2">
+      <h3>Expectation Contract <span class="text-muted text-sm">v{{ contract.version }}</span></h3>
+      <div class="text-muted text-sm mb-1">{{ contract.criteria | length }} criteria · source: {{ contract.source }}</div>
+      <table class="data-table">
+        <thead>
+          <tr><th>Criterion</th><th>Kind</th><th>Strength</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          {% for cr in contract.criteria %}
+          <tr>
+            <td>{{ cr.text }}</td>
+            <td><span class="badge">{{ cr.kind }}</span></td>
+            <td>{{ cr.strength }}</td>
+            <td>{{ cr.status }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4" class="text-muted">No criteria.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="card mb-2 text-muted text-sm">No expectation contract yet.</div>
+    {% endif %}
+  </div>
+
+</div>
+
+<hr class="section-sep"/>
+
+{# ---- Historical Runs ---- #}
+<h2>Historical Runs ({{ runs | length }})</h2>
+{% if runs %}
+<table class="data-table mb-2">
+  <thead>
+    <tr>
+      <th>Run ID</th>
+      <th>State</th>
+      <th>Match</th>
+      <th>Backend</th>
+      <th>Server</th>
+      <th>Submitted</th>
+      <th>Params</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for run in runs %}
+    <tr>
+      <td><a href="/runs/{{ run.run_id }}" class="mono">{{ run.run_id }}</a></td>
+      <td><span class="badge badge-{{ run.state }}">{{ run.state }}</span></td>
+      <td>
+        {% if run.expectation_match %}
+        <span class="badge badge-{{ run.expectation_match | replace('_', '-') }}">{{ run.expectation_match }}</span>
+        {% else %}—{% endif %}
+      </td>
+      <td>{{ run.backend or '—' }}</td>
+      <td>{{ run.server or '—' }}</td>
+      <td>{{ (run.submitted_at or '')[:16] }}</td>
+      <td class="text-sm mono">
+        {% for k, v in run.params.items() %}{{ k }}={{ v }}{% if not loop.last %}, {% endif %}{% endfor %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="text-muted text-sm mb-2">No runs yet.</div>
+{% endif %}
+
+{% endblock %}

@@ -1,0 +1,39 @@
+{# Run buckets partial — included by dashboard.html and returned by /ui/poll #}
+
+{% set bucket_defs = [
+    ("running",   "Running",     "badge-running",   buckets.running),
+    ("queued",    "Queued",      "badge-queued",    buckets.queued),
+    ("stuck",     "Stuck",       "badge-stuck",     buckets.stuck),
+    ("weak",      "Weak Signal", "badge-weak",      buckets.weak),
+    ("completed", "Completed",   "badge-completed", buckets.completed),
+    ("failed",    "Failed",      "badge-failed",    buckets.failed),
+] %}
+
+{% for key, label, badge_cls, runs in bucket_defs %}
+<div class="bucket-section">
+  <div class="bucket-title">
+    <span class="badge {{ badge_cls }}">{{ label }}</span>
+    <span class="count">{{ runs | length }}</span>
+  </div>
+  {% if runs %}
+  {% for run in runs %}
+  <a href="/runs/{{ run.run_id }}" style="display:block; text-decoration:none; color:inherit;">
+    <div class="run-row">
+      <span class="badge {{ badge_cls }}">{{ run.state }}</span>
+      <span class="run-id">{{ run.run_id }}</span>
+      <span class="run-jobfile">{{ run.jobfile_name or run.jobfile_id }}</span>
+      {% if run.server %}
+      <span class="run-server">{{ run.server }}</span>
+      {% endif %}
+      {% if run.expectation_match %}
+      <span class="badge badge-{{ run.expectation_match | replace('_', '-') }}">{{ run.expectation_match }}</span>
+      {% endif %}
+      <span class="run-time">{{ (run.submitted_at or '')[:16] }}</span>
+    </div>
+  </a>
+  {% endfor %}
+  {% else %}
+  <div class="empty-bucket">No {{ label | lower }} runs.</div>
+  {% endif %}
+</div>
+{% endfor %}

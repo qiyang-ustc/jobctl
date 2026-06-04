@@ -1,0 +1,207 @@
+{% extends "base.html" %}
+{% block title %}Run {{ run.run_id }} — jobctl{% endblock %}
+
+{% block content %}
+<div class="run-header">
+  <div>
+    <div class="flex-gap">
+      <h1>Run <span class="mono">{{ run.run_id }}</span></h1>
+      <span class="badge badge-{{ run.state }}">{{ run.state }}</span>
+      <span class="badge badge-{{ run.health }}">{{ run.health }}</span>
+      {% if run.expectation_match %}
+      <span class="badge badge-{{ run.expectation_match | replace('_', '-') | replace('signal', '') | replace('--', '-') }}">
+        {{ run.expectation_match }}
+      </span>
+      {% endif %}
+    </div>
+    <div class="run-meta flex-gap">
+      <span>JobFile: <a href="/jobfiles/{{ run.jobfile_id }}">{{ jobfile_name or run.jobfile_id }}</a></span>
+      {% if run.server %}<span>Server: {{ run.server }}</span>{% endif %}
+      {% if run.backend %}<span>Backend: {{ run.backend }}</span>{% endif %}
+      {% if run.submitted_at %}<span>Submitted: {{ run.submitted_at[:19] }}</span>{% endif %}
+      {% if run.finished_at %}<span>Finished: {{ run.finished_at[:19] }}</span>{% endif %}
+    </div>
+  </div>
+  {% if run.state in ("running", "submitted", "pending") %}
+  <div style="margin-left:auto"
+       hx-get="/ui/poll?run_id={{ run.run_id }}"
+       hx-trigger="every 5s"
+       hx-target="closest .run-header"
+       hx-swap="outerHTML">
+    <span class="badge badge-running htmx-indicator">polling…</span>
+  </div>
+  {% endif %}
+</div>
+
+<div class="detail-grid">
+
+  {# ---- Left column: params + resources ---- #}
+  <div>
+    <div class="card mb-2">
+      <h3>Parameters</h3>
+      <div class="kv-grid">
+        {% for k, v in run.params.items() %}
+        <div class="kv-key">{{ k }}</div>
+        <div class="kv-value">{{ v }}</div>
+        {% else %}
+        <span class="text-muted">—</span>
+        {% endfor %}
+      </div>
+    </div>
+
+    {% if run.resource_summary %}
+    <div class="card">
+      <h3>Resources</h3>
+      <div class="kv-grid">
+        {% for k, v in run.resource_summary.items() %}
+        <div class="kv-key">{{ k }}</div>
+        <div class="kv-value">{{ v }}</div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  {# ---- Right column: observation card ---- #}
+  <div>
+    {% if run.observation_card %}
+    {% set card = run.observation_card %}
+    <div class="obs-card">
+      <div class="obs-match">
+        Observation
+        {% if card.expectation_match %}
+        <span class="badge badge-{{ card.expectation_match | replace('_', '-') }}">{{ card.expectation_match }}</span>
+        {% endif %}
+      </div>
+      {% if card.interpretation %}
+      <div class="obs-interpretation">{{ card.interpretation }}</div>
+      {% endif %}
+      {% if card.recommended_next_action %}
+      <div class="obs-next-action">Next: {{ card.recommended_next_action }}</div>
+      {% endif %}
+      {% if card.key_evidence %}
+      <div class="obs-evidence mt-1">
+        <div class="text-muted text-sm mb-1">Key evidence:</div>
+        <ul style="list-style:disc; padding-left:1.2rem">
+          {% for e in card.key_evidence %}
+          <li>{{ e }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+    </div>
+    {% else %}
+    <div class="card text-muted text-sm">No observation card yet.</div>
+    {% endif %}
+  </div>
+
+</div>
+
+<hr class="section-sep"/>
+
+{# ---- Logs ---- #}
+<h2>Logs</h2>
+<div class="detail-grid mb-2">
+  <div>
+    <div class="log-label">stdout</div>
+    <pre class="log-block">{{ stdout_tail or "(no stdout)" }}</pre>
+  </div>
+  <div>
+    <div class="log-label">stderr</div>
+    <pre class="log-block">{{ stderr_tail or "(no stderr)" }}</pre>
+  </div>
+</div>
+
+<hr class="section-sep"/>
+
+{# ---- Artifacts ---- #}
+<h2>Artifacts ({{ artifacts | length }})</h2>
+{% if artifacts %}
+<div class="artifacts-grid mb-2">
+  {% for art in artifacts %}
+  <div class="artifact-card">
+    {% if art.type in ("image", "plot") and art.local_path %}
+    <img src="/ui/artifact-thumb?path={{ art.local_path | urlencode }}"
+         alt="{{ art.remote_path }}"
+         loading="lazy"/>
+    {% endif %}
+    <div class="artifact-card-body">
+      <div class="artifact-name">{{ art.remote_path | basename }}</div>
+      <div class="artifact-type">{{ art.type }}</div>
+      {% if art.type == "csv" and art.preview and art.preview.head %}
+      <div class="mt-1" style="overflow-x:auto; max-height:120px; overflow-y:auto">
+        <table class="data-table">
+          {% if art.preview.head %}
+          <thead>
+            <tr>{% for col in art.preview.head[0] %}<th>{{ col }}</th>{% endfor %}</tr>
+          </thead>
+          <tbody>
+            {% for row in art.preview.head[1:] %}
+            <tr>{% for cell in row %}<td>{{ cell }}</td>{% endfor %}</tr>
+            {% endfor %}
+          </tbody>
+          {% endif %}
+        </table>
+      </div>
+      {% if art.preview.shape %}
+      <div class="text-muted text-sm mt-1">{{ art.preview.shape[0] }} rows × {{ art.preview.shape[1] }} cols</div>
+      {% endif %}
+      {% endif %}
+      <div class="text-muted text-sm mt-1">{{ art.size }} bytes</div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="text-muted text-sm mb-2">No artifacts.</div>
+{% endif %}
+
+{# ---- Expectation Contract Criteria ---- #}
+{% if contract %}
+<hr class="section-sep"/>
+<h2>Expectation Contract</h2>
+<div class="card">
+  <div class="text-muted text-sm mb-1">Contract v{{ contract.version }} — {{ contract.criteria | length }} criteria</div>
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Criterion</th>
+        <th>Kind</th>
+        <th>Status</th>
+        <th>Strength</th>
+        {% if per_criterion %}
+        <th>Result</th>
+        <th>Detail</th>
+        {% endif %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for cr in contract.criteria %}
+      {% set pc = per_criterion_map.get(cr.id) if per_criterion_map else None %}
+      <tr>
+        <td>{{ cr.text }}</td>
+        <td><span class="badge">{{ cr.kind }}</span></td>
+        <td>{{ cr.status }}</td>
+        <td>{{ cr.strength }}</td>
+        {% if per_criterion %}
+        <td>
+          {% if pc %}
+            {% if pc.passed %}
+            <span class="criteria-pass">PASS</span>
+            {% else %}
+            <span class="criteria-fail">FAIL</span>
+            {% endif %}
+          {% else %}
+          <span class="text-muted">—</span>
+          {% endif %}
+        </td>
+        <td class="text-muted text-sm">{{ pc.detail if pc else '' }}</td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{% endblock %}
