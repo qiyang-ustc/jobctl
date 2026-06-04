@@ -79,7 +79,8 @@ class SshBackend(Backend):
         # Build the remote command:
         # nohup bash -c '... ; echo $? > exit_code.txt' > stdout.txt 2> stderr.txt &
         # echo $! > pid.txt
-        inner = f"({resolved_command(run, jobfile)}); echo $? > {exit_code_path}"
+        # cd into workdir so relative paths in the command (e.g. results.csv) land there
+        inner = f"cd {remote_workdir} && ({resolved_command(run, jobfile)}); echo $? > {exit_code_path}"
         remote_cmd = (
             f"nohup bash -c {_shell_quote(inner)} "
             f"> {stdout_path} 2> {stderr_path} & "
