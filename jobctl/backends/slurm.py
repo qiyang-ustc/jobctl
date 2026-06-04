@@ -107,6 +107,12 @@ class SlurmBackend(Backend):
         # Create remote workdir via SSH (uses _run_cmd so tests can intercept)
         self._run_cmd(["mkdir", "-p", workdir])
 
+        # Expand ~ to absolute path on remote so SLURM #SBATCH directives work
+        # (SLURM does not expand ~ in --output/--error paths)
+        abs_result = self._run_cmd(["sh", "-c", f"echo {workdir}"])
+        abs_workdir = abs_result.stdout.strip() if abs_result.stdout.strip() else workdir
+        workdir = abs_workdir
+
         remote_script = f"{workdir}/job.sh"
 
         # Build sbatch directives
