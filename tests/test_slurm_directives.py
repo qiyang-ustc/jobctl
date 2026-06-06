@@ -72,3 +72,43 @@ def test_resource_request_dict_shape():
     assert req["mem"] == "100M"
     assert req["cpus"] == 1
     assert "account" not in req  # oblix: omitted
+
+
+# --- poll reachability: distinguish "job aged out of squeue" from "SSH down" ---
+
+def test_poll_aged_out_job_falls_through_to_sacct():
+    """squeue rc!=0 'Invalid job id' (aged out) must consult sacct, not fail."""
+    import subprocess
+    def runner(cmd, **kw):
+        if cmd[0] == "squeue":
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="Invalid job id specified")
+        if cmd[0] == "sacct":
+            return subprocess.CompletedProcess(cmd, 0, stdout="315650|CANCELLED|0:0|08:44:00|956K|08:44:12\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    b = SlurmBackend(server="oblix", server_config={}, run_cmd=runner)
+    poll = b.poll(_run(remote_job_id="315650", state=State.STUCK))
+    assert poll.reachable is True
+    assert poll.state == State.CANCELLED
+
+
+def test_poll_ssh_failure_is_unreachable_not_failed():
+    """ssh exit 255 = connection failure -> reachable=False, state kept."""
+    import subprocess
+    def runner(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 255, stdout="", stderr="ssh: connect to host timed out")
+    b = SlurmBackend(server="oblix", server_config={}, run_cmd=runner)
+    poll = b.poll(_run(remote_job_id="315650", state=State.RUNNING))
+    assert poll.reachable is False
+    assert poll.state == State.RUNNING
+
+
+def test_parse_sacct_prefers_main_row_state_over_substeps():
+    """Main job CANCELLED but .extern COMPLETED -> State is CANCELLED."""
+    from jobctl.backends.slurm import SlurmBackend
+    out = "\n".join([
+        "315650|CANCELLED|0:0|08:44:00|0|08:44:12",
+        "315650.batch|CANCELLED|0:15|08:44:00|956K|08:44:12",
+        "315650.extern|COMPLETED|0:0|08:44:00|0|08:44:12",
+    ])
+    exit_code, resource = SlurmBackend._parse_sacct(out, "315650")
+    assert resource["State"] == "CANCELLED"

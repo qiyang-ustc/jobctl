@@ -98,24 +98,28 @@ class SshBackend(Backend):
         return SubmitResult(remote_job_id=pid, workdir=remote_workdir)
 
     def poll(self, run: "Run") -> PollResult:
-        """Check if the remote process is alive via kill -0."""
+        """Check if the remote process is alive via kill -0.
+
+        A unique marker disambiguates "process alive/dead" (a successful SSH
+        whose payload tells us the truth) from "SSH itself failed" (unreachable
+        → reachable=False, the monitor leaves the run untouched). Previously an
+        SSH failure was misread as COMPLETED.
+        """
         pid = run.remote_job_id
         if not pid:
             return PollResult(state=State.FAILED, resource={})
 
-        result = self._ssh(f"kill -0 {pid} 2>/dev/null; echo $?")
-        # If returncode != 0 from ssh itself, or stdout is "1", process is gone
-        if result.returncode != 0:
-            return PollResult(state=State.COMPLETED, resource={})
+        keep = run.state if isinstance(run.state, State) else State.RUNNING
+        result = self._ssh(f"kill -0 {pid} 2>/dev/null; echo ALIVE:$?")
+        out = result.stdout.strip()
 
-        output = result.stdout.strip()
-        if output == "0" or result.returncode == 0:
-            # Try to distinguish "0" (alive) vs "1" (dead)
-            if output == "1":
-                return PollResult(state=State.COMPLETED, resource={})
+        if "ALIVE:0" in out:
             return PollResult(state=State.RUNNING, resource={})
-
-        return PollResult(state=State.COMPLETED, resource={})
+        if "ALIVE:1" in out:
+            # Process is gone — it finished (exit code resolved in collect()).
+            return PollResult(state=State.COMPLETED, resource={})
+        # No marker → the SSH command itself failed: unreachable, not finished.
+        return PollResult(state=keep, resource={}, reachable=False)
 
     def collect(self, run: "Run") -> CollectResult:
         """Rsync artifacts back and return paths + exit code."""
@@ -167,10 +171,16 @@ class SshBackend(Backend):
     # ------------------------------------------------------------------
 
     def _ssh(self, remote_cmd: str) -> subprocess.CompletedProcess:
-        """Run a command on the remote host via SSH."""
+        """Run a command on the remote host via SSH (fast-fail on unreachable)."""
         user_prefix = f"{self._user}@" if self._user else ""
-        cmd = ["ssh", f"{user_prefix}{self._host}", remote_cmd]
-        return self._run_cmd(cmd)
+        cmd = [
+            "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+            f"{user_prefix}{self._host}", remote_cmd,
+        ]
+        try:
+            return self._run_cmd(cmd, timeout=30)
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(cmd, returncode=255, stdout="", stderr="ssh timed out")
 
 
 def _shell_quote(s: str) -> str:

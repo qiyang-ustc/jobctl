@@ -61,8 +61,10 @@ _TERMINAL_STATES = {
     State.STUCK,
 }
 
-# Active (non-terminal, non-pending) states that we poll
-_POLLABLE_STATES = {State.SUBMITTED, State.RUNNING}
+# States we keep polling. STUCK is included so a run that was flagged stuck
+# (often just a transient connectivity blip) gets RECONCILED once the cluster
+# is reachable again — squeue/sacct will resolve it to its true state.
+_POLLABLE_STATES = {State.SUBMITTED, State.RUNNING, State.STUCK}
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +220,11 @@ class Monitor:
         self._probe_interval = float(
             config.get("probe_interval_seconds", _DEFAULT_PROBE_INTERVAL)
         )
+        # Hard cap on a single backend.poll() call so a hung SSH can never
+        # block the monitor's event loop (backstop above the SSH timeout).
+        self._poll_call_timeout = float(
+            config.get("poll_call_timeout_seconds", 45.0)
+        )
 
         # Track when we last probed servers
         self._last_probe_time: float = 0.0
@@ -352,108 +359,84 @@ class Monitor:
             logger.warning("No backend for run=%s; skipping poll", run.run_id)
             return
 
+        prev_state = run.state
+        # Poll off the event loop with a hard timeout so a hung backend (e.g.
+        # an SSH that won't connect) can never freeze monitoring.
         try:
-            poll = backend.poll(run)
-        except Exception as exc:
-            logger.warning("Backend.poll failed for run=%s: %s", run.run_id, exc)
+            poll = await asyncio.wait_for(
+                asyncio.to_thread(backend.poll, run),
+                timeout=self._poll_call_timeout,
+            )
+        except (asyncio.TimeoutError, Exception) as exc:
+            logger.warning("poll failed/timed out for run=%s: %s", run.run_id, exc)
+            self.store.update_run(run.run_id, health=Health.NO_HEARTBEAT)
+            return
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        # --- Unreachable: backend could not determine the job's state ---
+        # Mark it as "no heartbeat" but DO NOT change run state — "I can't see
+        # the job" is not "the job failed/is stuck". It will reconcile on a
+        # later successful poll.
+        if not getattr(poll, "reachable", True):
+            logger.warning(
+                "run=%s: cluster unreachable, keeping state=%s (health=no_heartbeat)",
+                run.run_id, getattr(prev_state, "value", prev_state),
+            )
+            self.store.update_run(run.run_id, health=Health.NO_HEARTBEAT)
             return
 
         new_state = poll.state
-        now_iso = datetime.now(timezone.utc).isoformat()
 
-        # --- Stuck detection ---
-        if run.state == State.RUNNING or new_state == State.RUNNING:
+        # --- Stuck detection (only when the job is still RUNNING) ---
+        if prev_state == State.RUNNING or new_state == State.RUNNING:
             if self._is_stuck(run, poll):
                 new_state = State.STUCK
 
         # --- Update state if changed ---
-        if new_state != run.state:
+        if new_state != prev_state:
             updates: dict = {"state": new_state}
-
             if new_state == State.RUNNING and run.started_at is None:
                 updates["started_at"] = now_iso
-
             if new_state == State.STUCK:
                 updates["health"] = Health.STUCK
-
+            elif new_state == State.RUNNING:
+                updates["health"] = Health.OK  # recovered from a blip
             self.store.update_run(run.run_id, **updates)
-
-            # Refresh run from DB
             run = self.store.get_run(run.run_id)
 
-        # --- Update heartbeat for RUNNING runs ---
+        # --- Update heartbeat (+ clear stale health) for RUNNING runs ---
         if new_state == State.RUNNING:
-            self.store.update_run(run.run_id, last_heartbeat=now_iso)
+            self.store.update_run(run.run_id, last_heartbeat=now_iso, health=Health.OK)
 
-        # --- Terminal handling ---
-        if new_state in _TERMINAL_STATES:
+        # --- Terminal handling: only fire on a NEW transition into terminal ---
+        if new_state in _TERMINAL_STATES and new_state != prev_state:
             run = self.store.get_run(run.run_id)
             await self.on_terminal(run)
 
     def _is_stuck(self, run: Run, poll: "from jobctl.backends.base import PollResult") -> bool:
-        """Determine if a RUNNING run is stuck.
+        """Stuck = the job is still RUNNING but its log has gone quiet too long.
 
-        Stuck = log has not grown for > stuck_timeout_seconds
-                AND heartbeat has not been updated for > stuck_timeout_seconds.
-
-        When no log mtime or heartbeat is available yet (e.g. first poll of
-        an SSH/SLURM job before stdout is locally mirrored), we fall back to
-        submitted_at / started_at so that a brand-new run is never immediately
-        declared stuck.
+        We require REAL evidence of a stalled log: a concrete ``last_log_mtime``
+        (or an existing local stdout file) that hasn't advanced for
+        > stuck_timeout_seconds. We deliberately do NOT:
+          - use jobctl's own heartbeat (that reflects OUR poll cadence, not the
+            job — a connectivity blip would falsely trip it; that was the bug), or
+          - guess from started_at when no log exists (that falsely flagged every
+            quiet long-running job, e.g. a SLURM job whose stdout is only
+            mirrored on completion).
+        No log evidence -> not stuck. The scheduler still saying RUNNING wins.
         """
         now = time.time()
-        threshold = self._stuck_timeout
-
-        # Check last_log_mtime
-        log_stale = False
         last_mtime = poll.last_log_mtime
-        if last_mtime is None:
-            # Try stdout_path mtime as fallback
-            if run.stdout_path:
-                try:
-                    last_mtime = Path(run.stdout_path).stat().st_mtime
-                except OSError:
-                    last_mtime = None
-        if last_mtime is None:
-            # No log mtime available; use started_at / submitted_at as proxy
-            ref_ts: str | None = run.started_at or run.submitted_at
-            if ref_ts is not None:
-                try:
-                    ref_dt = datetime.fromisoformat(ref_ts)
-                    if (now - ref_dt.timestamp()) > threshold:
-                        log_stale = True
-                    # else: job only just started, not stale yet
-                except (ValueError, OSError):
-                    log_stale = True  # unparseable timestamp -> assume stale
-            # If ref_ts is also None, the run is brand-new; do not mark log stale
-        elif (now - last_mtime) > threshold:
-            log_stale = True
-
-        # Check heartbeat
-        hb_stale = False
-        last_hb = run.last_heartbeat
-        if last_hb is None:
-            # No heartbeat yet; use started_at / submitted_at as proxy
-            ref_ts = run.started_at or run.submitted_at
-            if ref_ts is not None:
-                try:
-                    ref_dt = datetime.fromisoformat(ref_ts)
-                    if (now - ref_dt.timestamp()) > threshold:
-                        hb_stale = True
-                    # else: job only just started, not stale yet
-                except (ValueError, OSError):
-                    hb_stale = True
-            # If ref_ts is None, brand-new run; do not mark hb stale
-        else:
+        if last_mtime is None and run.stdout_path:
             try:
-                hb_dt = datetime.fromisoformat(last_hb)
-                hb_age = now - hb_dt.timestamp()
-                if hb_age > threshold:
-                    hb_stale = True
-            except (ValueError, OSError):
-                hb_stale = True
-
-        return log_stale and hb_stale
+                last_mtime = Path(run.stdout_path).stat().st_mtime
+            except OSError:
+                last_mtime = None
+        if last_mtime is None:
+            return False  # no evidence of a stall -> trust the scheduler
+        return (now - last_mtime) > self._stuck_timeout
 
     # ------------------------------------------------------------------
     # on_terminal

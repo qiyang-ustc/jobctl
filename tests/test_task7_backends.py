@@ -744,8 +744,8 @@ class TestSshBackendCommandConstruction:
 
         def run_cmd(cmd, **kw):
             calls.append(list(cmd))
-            # Simulate "pid exists" via kill -0 returning 0
-            return MagicMock(returncode=0, stdout="", stderr="")
+            # Simulate "pid exists": `kill -0 PID; echo ALIVE:$?` -> ALIVE:0
+            return MagicMock(returncode=0, stdout="ALIVE:0\n", stderr="")
 
         backend = SshBackend(
             server="oblix",
@@ -757,8 +757,9 @@ class TestSshBackendCommandConstruction:
             workdir="/remote/work/run-001",
         )
         poll = backend.poll(run)
-        # Should return RUNNING since returncode=0 (pid alive)
-        assert poll.state in (State.RUNNING, State.COMPLETED, State.FAILED)
+        # ALIVE:0 -> process alive -> RUNNING
+        assert poll.state == State.RUNNING
+        assert poll.reachable is True
 
         ssh_calls = [c for c in calls if "ssh" in c[0]]
         assert len(ssh_calls) >= 1
@@ -767,10 +768,9 @@ class TestSshBackendCommandConstruction:
         from jobctl.backends.ssh import SshBackend
 
         def run_cmd(cmd, **kw):
-            # kill -0 returns 1 = pid not found
-            if "ssh" in cmd[0]:
-                return MagicMock(returncode=1, stdout="", stderr="no such process")
-            return MagicMock(returncode=0, stdout="", stderr="")
+            # `kill -0 PID; echo ALIVE:$?` with a dead pid -> echo prints ALIVE:1
+            # (the ssh call itself succeeds, rc=0)
+            return MagicMock(returncode=0, stdout="ALIVE:1\n", stderr="")
 
         backend = SshBackend(
             server="oblix",
@@ -782,7 +782,8 @@ class TestSshBackendCommandConstruction:
             workdir="/remote/work/run-001",
         )
         poll = backend.poll(run)
-        assert poll.state in (State.COMPLETED, State.FAILED)
+        assert poll.state == State.COMPLETED
+        assert poll.reachable is True
 
     def test_collect_builds_rsync_pull_command(self):
         from jobctl.backends.ssh import SshBackend

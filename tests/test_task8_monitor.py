@@ -822,3 +822,90 @@ class TestPendingToSubmitted:
 
         stored = store.get_run(run.run_id)
         assert stored.state == State.COMPLETED
+
+
+# ===========================================================================
+# Tests: reachability (no false stuck/failed on SSH/VPN blips) + reconcile
+# ===========================================================================
+
+class TestReachabilityAndReconcile:
+    """Regression for the 'falsely stuck' bug: a connectivity blip must not
+    corrupt run state, and an already-stuck run must reconcile when the cluster
+    comes back."""
+
+    def _monitor(self, store, backend, run):
+        Monitor, _ = _import_monitor()
+        m = Monitor(
+            store=store,
+            config={"stuck_timeout_seconds": 600},
+            analyzer=OfflineAnalyzer(),
+            notifiers_factory=lambda r: [],
+        )
+        m._backends = {run.run_id: backend}
+        return m
+
+    def test_unreachable_poll_keeps_state_and_marks_no_heartbeat(self, tmp_path):
+        store = _make_store(tmp_path)
+        jf = _make_jobfile(tmp_path)
+        store.add_jobfile(jf)
+        run = _make_run(jf, workdir=str(tmp_path), state=State.RUNNING)
+        run.started_at = _now_iso()
+        run.last_heartbeat = _now_iso()
+        store.add_run(run)
+
+        backend = FakeBackend(
+            poll_sequence=[PollResult(state=State.RUNNING, resource={}, reachable=False)],
+            collect_result=CollectResult(
+                exit_code=None, stdout_path="", stderr_path="", artifact_dir=str(tmp_path)
+            ),
+        )
+        asyncio.run(self._monitor(store, backend, run).poll_runs())
+
+        stored = store.get_run(run.run_id)
+        assert stored.state == State.RUNNING          # NOT stuck / NOT failed
+        assert stored.health == Health.NO_HEARTBEAT
+
+    def test_running_without_local_log_is_not_stuck(self, tmp_path):
+        # SLURM-style: running a long time with no local stdout mirror -> NOT stuck
+        store = _make_store(tmp_path)
+        jf = _make_jobfile(tmp_path)
+        store.add_jobfile(jf)
+        run = _make_run(jf, workdir=str(tmp_path), state=State.RUNNING)
+        run.started_at = "2020-01-01T00:00:00+00:00"   # long ago
+        run.last_heartbeat = "2020-01-01T00:00:00+00:00"
+        run.stdout_path = None
+        store.add_run(run)
+
+        backend = FakeBackend(
+            poll_sequence=[PollResult(state=State.RUNNING, resource={}, last_log_mtime=None)],
+            collect_result=CollectResult(
+                exit_code=None, stdout_path="", stderr_path="", artifact_dir=str(tmp_path)
+            ),
+        )
+        asyncio.run(self._monitor(store, backend, run).poll_runs())
+
+        stored = store.get_run(run.run_id)
+        assert stored.state == State.RUNNING
+        assert stored.health != Health.STUCK
+
+    def test_stuck_run_reconciles_when_cluster_returns(self, tmp_path):
+        store = _make_store(tmp_path)
+        jf = _make_jobfile(tmp_path)
+        store.add_jobfile(jf)
+        run = _make_run(jf, workdir=str(tmp_path), state=State.STUCK)
+        run.started_at = _now_iso()
+        store.add_run(run)
+        (tmp_path / "o.txt").write_text("")
+        (tmp_path / "e.txt").write_text("")
+
+        backend = FakeBackend(
+            poll_sequence=[PollResult(state=State.CANCELLED, resource={}, reachable=True)],
+            collect_result=CollectResult(
+                exit_code=0, stdout_path=str(tmp_path / "o.txt"),
+                stderr_path=str(tmp_path / "e.txt"), artifact_dir=str(tmp_path),
+            ),
+        )
+        asyncio.run(self._monitor(store, backend, run).poll_runs())
+
+        stored = store.get_run(run.run_id)
+        assert stored.state == State.CANCELLED   # reconciled out of 'stuck'

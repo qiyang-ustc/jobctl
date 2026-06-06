@@ -150,13 +150,26 @@ class SlurmBackend(Backend):
         return SubmitResult(remote_job_id=job_id, workdir=workdir, slurm_request=slurm_request)
 
     def poll(self, run: "Run") -> PollResult:
-        """Query squeue; if not found, fall back to sacct for terminal state."""
+        """Query squeue; if not found, fall back to sacct for terminal state.
+
+        Distinguishes *unreachable* (SSH/command failure → reachable=False, the
+        monitor keeps the run as-is) from *job genuinely not in queue* (rc==0,
+        empty → consult sacct). Never defaults to FAILED on a failed SSH call.
+        """
         job_id = run.remote_job_id
         if not job_id:
             return PollResult(state=State.FAILED, resource={})
 
+        keep = run.state if isinstance(run.state, State) else State.RUNNING
+
         # --- squeue ---
         result = self._run_cmd(["squeue", f"--job={job_id}", "--format=%i|%T|%R", "--noheader"])
+        if result.returncode == 255:
+            # SSH itself failed (255) → cluster unreachable, NOT failed.
+            return PollResult(state=keep, resource={}, reachable=False)
+        # Any OTHER non-zero (e.g. "Invalid job id specified" for an aged-out
+        # job) means squeue ran but the job isn't in the live queue → consult
+        # sacct rather than guessing.
         squeue_out = result.stdout.strip()
 
         # Filter to lines matching our job ID (skip header lines)
@@ -179,7 +192,7 @@ class SlurmBackend(Backend):
             return PollResult(state=mapped, resource={})
 
         # Job not in squeue — use sacct for terminal state + resources
-        return self._poll_via_sacct(job_id)
+        return self._poll_via_sacct(job_id, keep)
 
     def collect(self, run: "Run") -> CollectResult:
         """Collect results: rsync remote workdir to local mirror, parse sacct."""
@@ -311,11 +324,24 @@ class SlurmBackend(Backend):
             )
 
     def _default_ssh_run_cmd(self, cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
-        """Wrap a command to run on the remote server via SSH."""
+        """Wrap a command to run on the remote server via SSH.
+
+        Uses BatchMode + ConnectTimeout and a hard subprocess timeout so a
+        hung/unreachable host fails fast (rc!=0) instead of blocking the
+        monitor's poll loop indefinitely.
+        """
         remote_cmd = " ".join(cmd)
         user_prefix = f"{self._user}@" if self._user else ""
-        ssh_cmd = ["ssh", f"{user_prefix}{self._host}", remote_cmd]
-        return subprocess.run(ssh_cmd, capture_output=True, text=True, **kwargs)
+        ssh_cmd = [
+            "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+            f"{user_prefix}{self._host}", remote_cmd,
+        ]
+        try:
+            return subprocess.run(
+                ssh_cmd, capture_output=True, text=True, timeout=30, **kwargs
+            )
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(ssh_cmd, returncode=255, stdout="", stderr="ssh timed out")
 
     @staticmethod
     def _parse_sbatch_output(text: str) -> str | None:
@@ -323,8 +349,14 @@ class SlurmBackend(Backend):
         m = re.search(r"Submitted batch job\s+(\d+)", text)
         return m.group(1) if m else None
 
-    def _poll_via_sacct(self, job_id: str) -> PollResult:
-        """Query sacct for job state and resources."""
+    def _poll_via_sacct(self, job_id: str, keep: "State | None" = None) -> PollResult:
+        """Query sacct for job state and resources.
+
+        *keep* is the run's current state, returned (with reachable flag set
+        appropriately) when sacct can't reach the cluster or has no record yet,
+        so a transient blip never gets misread as a terminal state.
+        """
+        keep = keep or State.RUNNING
         result = self._run_cmd([
             "sacct",
             f"--jobs={job_id}",
@@ -332,8 +364,16 @@ class SlurmBackend(Backend):
             "--noheader",
             "--parsable2",
         ])
+        if result.returncode == 255:
+            # SSH failed → unreachable, not failed.
+            return PollResult(state=keep, resource={}, reachable=False)
+
         _, resource = self._parse_sacct(result.stdout, job_id)
         state_str = resource.get("State", "")
+        if not state_str:
+            # Not in queue and no sacct record yet (brief window after exit).
+            # Keep the current state; the next poll will resolve it.
+            return PollResult(state=keep, resource=resource)
         # Normalise: "COMPLETED" -> "CD", "FAILED" -> "F", etc.
         state = self._sacct_state_to_state(state_str)
         return PollResult(state=state, resource=resource)
@@ -393,12 +433,16 @@ class SlurmBackend(Backend):
 
         resource: dict = {}
         exit_code: int | None = None
+        # State/ExitCode must come from the MAIN job row (e.g. "315650"), not a
+        # sub-step ("315650.extern" often reports COMPLETED even when the job was
+        # CANCELLED). Other fields (MaxRSS, etc.) may come from any step.
+        main_state: str | None = None
+        main_exit: int | None = None
 
         for line in data_lines:
             parts = [p.strip() for p in line.split("|")]
             if not parts:
                 continue
-            # Filter to the main job entry (not sub-step entries like 12345.batch)
             job_field = parts[0] if parts else ""
             if job_field and job_field != job_id and not job_field.startswith(job_id + "."):
                 continue
@@ -406,12 +450,24 @@ class SlurmBackend(Backend):
             row = dict(zip(header, parts))
             resource.update(row)
 
-            # Parse exit code: "0:0" format -> first part
             exit_str = row.get("ExitCode", "")
+            parsed_exit: int | None = None
             if exit_str:
                 try:
-                    exit_code = int(exit_str.split(":")[0])
+                    parsed_exit = int(exit_str.split(":")[0])
                 except (ValueError, IndexError):
-                    pass
+                    parsed_exit = None
+            if parsed_exit is not None:
+                exit_code = parsed_exit
+
+            if job_field == job_id:  # the main job row is authoritative
+                main_state = row.get("State", main_state)
+                if parsed_exit is not None:
+                    main_exit = parsed_exit
+
+        if main_state is not None:
+            resource["State"] = main_state
+        if main_exit is not None:
+            exit_code = main_exit
 
         return exit_code, resource

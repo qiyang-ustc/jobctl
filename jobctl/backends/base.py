@@ -31,10 +31,18 @@ class SubmitResult:
 
 @dataclass
 class PollResult:
-    """Result returned by Backend.poll()."""
+    """Result returned by Backend.poll().
+
+    reachable=False means the backend could NOT determine the job's state
+    (SSH/cluster unreachable, command timed out). The monitor must treat this
+    as "unknown / no heartbeat" and NOT transition the run to failed/stuck —
+    conflating "I can't see the job" with "the job died" was the core bug
+    behind false 'stuck' classifications during VPN/SSH blips.
+    """
     state: "State"
     resource: dict
     last_log_mtime: float | None = None
+    reachable: bool = True
 
 
 @dataclass
