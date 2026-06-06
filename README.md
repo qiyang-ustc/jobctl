@@ -27,6 +27,19 @@ jobctl servers --json                       # cluster health (online, load, queu
 `jobctl --help` lists the rest. A web UI runs at `http://127.0.0.1:7421`
 (server health, run buckets, per-run logs / artifacts / observation cards).
 
+## Logs & reporting bugs
+
+Every invocation leaves a trail in `~/.jobctl/`:
+- `cli.log` — every `jobctl` command
+- `daemon.log` — the daemon + monitor loop (state polls, unreachable warnings, terminal pipeline)
+
+Hit a jobctl bug? File it straight from the CLI — it bundles the version, log
+tails, the run record, and recent failures, then opens a GitHub issue:
+
+```bash
+jobctl report-bug "monitor marked my running job stuck" --run <run_id>
+```
+
 ## A JobFile
 
 ```yaml
