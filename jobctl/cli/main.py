@@ -94,6 +94,22 @@ expect_app = typer.Typer(help="Expectation contracts.", no_args_is_help=True)
 app.add_typer(memory_app, name="memory")
 app.add_typer(expect_app, name="expect")
 
+
+@app.callback()
+def _main(ctx: typer.Context):
+    """Log every jobctl invocation so all calls leave a trail in ~/.jobctl/cli.log."""
+    # Skip the heavy log setup for `serve` (it configures its own 'daemon' log).
+    if ctx.invoked_subcommand == "serve":
+        return
+    try:
+        from jobctl.logsetup import configure_logging
+        import logging as _logging
+        configure_logging("cli")
+        _logging.getLogger("jobctl.cli").info("invoke: %s", " ".join(sys.argv[1:]) or "(no args)")
+    except Exception:
+        pass  # logging must never break a command
+
+
 _TERMINAL_STATES = {"completed", "failed", "cancelled", "stuck", "timeout"}
 
 # How long `run --wait` / `await` block before giving up (12 hours) — long
@@ -444,6 +460,68 @@ def servers(
 
 
 # ---------------------------------------------------------------------------
+# report-bug
+# ---------------------------------------------------------------------------
+
+@app.command(name="report-bug")
+def report_bug(
+    description: Annotated[str, typer.Argument(help="What went wrong, in one line")],
+    run_id: Annotated[Optional[str], typer.Option("--run", help="Related run id")] = None,
+    submit: Annotated[bool, typer.Option("--submit/--no-submit", help="File a GitHub issue")] = True,
+    json_out: Annotated[bool, typer.Option("--json", help="Output JSON")] = False,
+):
+    """Report a jobctl bug: bundles diagnostics (version, log tails, the run
+    record, recent failures) and opens a GitHub issue on the jobctl repo so the
+    maintainer can fix it. Falls back to a local file if GitHub is unreachable."""
+    from datetime import datetime
+    from jobctl import report as _report
+    from jobctl.logsetup import log_dir
+
+    try:
+        from importlib.metadata import version as _pkg_version
+        version = _pkg_version("jobctl")
+    except Exception:
+        version = "0.1.0"
+
+    # Best-effort diagnostics from the daemon (never fatal).
+    run = None
+    recent = None
+    try:
+        client = _get_client()
+        if run_id:
+            run = client.get_run(run_id)
+        runs = client.list_runs()
+        recent = [r for r in runs if r.get("state") in ("failed", "stuck", "timeout")][-10:]
+    except Exception as exc:
+        typer.echo(f"(note: could not gather daemon diagnostics: {exc})", err=True)
+
+    body = _report.build_report(description, version=version, run=run, recent=recent)
+    title = f"[bug] {description[:70]}"
+
+    url = _report.submit_issue(title, body) if submit else None
+    if url:
+        result = {"submitted": True, "issue_url": url}
+    else:
+        issues_dir = log_dir() / "issues"
+        issues_dir.mkdir(parents=True, exist_ok=True)
+        path = issues_dir / f"bug-{datetime.now().strftime('%Y%m%dT%H%M%S')}.md"
+        path.write_text(f"# {title}\n\n{body}\n")
+        result = {
+            "submitted": False,
+            "saved_to": str(path),
+            "manual": f"gh issue create --repo {_report.REPO} --title {title!r} --body-file {path}",
+        }
+
+    if json_out:
+        _print_json(result)
+    elif url:
+        typer.echo(f"Filed issue: {url}")
+    else:
+        typer.echo(f"Could not file to GitHub; saved report to {result['saved_to']}")
+        typer.echo(f"  file it manually: {result['manual']}")
+
+
+# ---------------------------------------------------------------------------
 # memory sub-group
 # ---------------------------------------------------------------------------
 
@@ -634,6 +712,11 @@ def serve(
     import uvicorn
     from jobctl.api.server import create_app
     from jobctl.config import load_config as _load_config
+    from jobctl.logsetup import configure_logging
+
+    log_file = configure_logging("daemon")
+    import logging as _logging
+    _logging.getLogger("jobctl").info("daemon starting on %s:%s (log: %s)", host, port, log_file)
 
     # Load cluster.yaml so server configs (remote_path, account, partition, etc.)
     # are available to backends at runtime.

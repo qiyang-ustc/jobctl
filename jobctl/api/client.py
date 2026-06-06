@@ -309,12 +309,16 @@ def ensure_daemon(
     except Exception:
         pass
 
-    # Spawn daemon
-    logger.info("Starting jobctl daemon on %s", base_url)
+    # Spawn daemon. Send its stdout/stderr to a log file (NOT DEVNULL) so that
+    # tracebacks and uvicorn output are recoverable — "check the logs" must work.
+    from jobctl.logsetup import log_path
+    daemon_log = log_path("daemon")
+    logger.info("Starting jobctl daemon on %s (log: %s)", base_url, daemon_log)
+    _log_fh = open(daemon_log, "a", buffering=1)
     subprocess.Popen(
         [sys.executable, "-m", "jobctl.cli.main", "serve"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=_log_fh,
+        stderr=subprocess.STDOUT,
         start_new_session=True,
     )
 
