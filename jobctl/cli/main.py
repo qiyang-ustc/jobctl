@@ -522,6 +522,41 @@ def report_bug(
 
 
 # ---------------------------------------------------------------------------
+# gc
+# ---------------------------------------------------------------------------
+
+@app.command()
+def gc(
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="List orphans without deleting")] = False,
+    json_out: Annotated[bool, typer.Option("--json", help="Output JSON")] = False,
+):
+    """Remove orphan run directories in ~/.jobctl/runs that have no DB record.
+
+    A directory is only removed when its name isn't a known run_id, so runs the
+    daemon still tracks are never touched."""
+    from jobctl import gc as _gc
+    from jobctl.logsetup import log_dir
+
+    client = _get_client()
+    known = {r["run_id"] for r in client.list_runs()}
+    runs_dir = log_dir() / "runs"
+    orphans, removed = _gc.gc_runs(str(runs_dir), known, dry_run=dry_run)
+
+    result = {
+        "runs_dir": str(runs_dir),
+        "orphans_found": len(orphans),
+        "removed": len(removed),
+        "dry_run": dry_run,
+    }
+    if json_out:
+        _print_json(result)
+    elif dry_run:
+        typer.echo(f"{len(orphans)} orphan run dir(s) would be removed from {runs_dir} (dry-run).")
+    else:
+        typer.echo(f"Removed {len(removed)} orphan run dir(s) from {runs_dir} (of {len(orphans)} found).")
+
+
+# ---------------------------------------------------------------------------
 # memory sub-group
 # ---------------------------------------------------------------------------
 

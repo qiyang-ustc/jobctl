@@ -40,6 +40,9 @@ tails, the run record, and recent failures, then opens a GitHub issue:
 jobctl report-bug "monitor marked my running job stuck" --run <run_id>
 ```
 
+Run dirs are mirrored under `~/.jobctl/runs/`; `jobctl gc` clears ones with no
+DB record (`--dry-run` to preview).
+
 ## A JobFile
 
 ```yaml
