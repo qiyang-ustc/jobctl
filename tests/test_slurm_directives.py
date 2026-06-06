@@ -112,3 +112,35 @@ def test_parse_sacct_prefers_main_row_state_over_substeps():
     ])
     exit_code, resource = SlurmBackend._parse_sacct(out, "315650")
     assert resource["State"] == "CANCELLED"
+
+
+# --- batch polling: one squeue for the whole sweep ---
+
+def test_poll_many_uses_one_squeue_then_sacct_for_missing():
+    import subprocess
+    calls = []
+    def runner(cmd, **kw):
+        calls.append(cmd[0])
+        if cmd[0] == "squeue":
+            return subprocess.CompletedProcess(cmd, 0, stdout="315001,RUNNING\n", stderr="")
+        if cmd[0] == "sacct":
+            return subprocess.CompletedProcess(cmd, 0, stdout="315002|COMPLETED|0:0|t|0|t\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    b = SlurmBackend(server="oblix", server_config={}, run_cmd=runner)
+    r1 = _run(run_id="run-a", remote_job_id="315001", state=State.RUNNING)
+    r2 = _run(run_id="run-b", remote_job_id="315002", state=State.RUNNING)
+    res = b.poll_many([r1, r2])
+    assert res["run-a"].state == State.RUNNING       # found live in squeue
+    assert res["run-b"].state == State.COMPLETED      # gone -> sacct
+    assert calls.count("squeue") == 1                 # ONE squeue for both
+
+
+def test_poll_many_ssh_down_marks_all_unreachable():
+    import subprocess
+    def runner(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 255, stdout="", stderr="ssh failed")
+    b = SlurmBackend(server="oblix", server_config={}, run_cmd=runner)
+    r1 = _run(run_id="run-a", remote_job_id="1", state=State.RUNNING)
+    res = b.poll_many([r1])
+    assert res["run-a"].reachable is False
+    assert res["run-a"].state == State.RUNNING

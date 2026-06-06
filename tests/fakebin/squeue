@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
 # Fake squeue: simulates job state transitions.
-# FAKEBIN_SQUEUE_STATE controls the output:
-#   PD  -> prints a pending line
-#   R   -> prints a running line
-#   ""  (empty/unset) -> job no longer in queue (completed/done)
-# Default state if unset: R
-# Note: use ${VAR-default} (no colon) so empty string is not replaced by default.
+# Emits the comma-delimited, header-less format the backend now requests
+# (--format=%i,%T --noheader). '|' was a shell-pipe hazard over real SSH.
+#   FAKEBIN_SQUEUE_STATE: PD | R | "" (empty/unset -> not in queue)
+#   Default state if unset: R
 JOBID="${FAKEBIN_SBATCH_JOBID:-12345}"
 
-# If FAKEBIN_SQUEUE_STATE is unset, default to R; if explicitly set to empty, empty = done
 if [[ -z "${FAKEBIN_SQUEUE_STATE+x}" ]]; then
     STATE="R"
 else
@@ -16,11 +13,9 @@ else
 fi
 
 if [[ -z "$STATE" ]]; then
-    # Job has left the queue — print header only
-    echo "JOBID|STATE|REASON"
+    # Job has left the queue — print nothing.
     exit 0
 fi
 
-echo "JOBID|STATE|REASON"
-echo "${JOBID}|${STATE}|None"
+echo "${JOBID},${STATE}"
 exit 0

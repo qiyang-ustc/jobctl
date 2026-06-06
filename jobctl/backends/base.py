@@ -76,6 +76,15 @@ class Backend(ABC):
     def cancel(self, run: "Run") -> None:
         """Cancel/kill the job."""
 
+    def poll_many(self, runs: "list[Run]") -> "dict[str, PollResult]":
+        """Poll several runs at once, returning {run_id: PollResult}.
+
+        Default = poll each individually. Backends that talk to a scheduler
+        (SLURM) override this to make ONE query per cycle instead of one SSH
+        per run (the connection storm that throttled the login node).
+        """
+        return {run.run_id: self.poll(run) for run in runs}
+
 
 # ---------------------------------------------------------------------------
 # Backend selector

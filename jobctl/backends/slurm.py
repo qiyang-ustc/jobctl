@@ -163,36 +163,66 @@ class SlurmBackend(Backend):
         keep = run.state if isinstance(run.state, State) else State.RUNNING
 
         # --- squeue ---
-        result = self._run_cmd(["squeue", f"--job={job_id}", "--format=%i|%T|%R", "--noheader"])
+        # NOTE: the format delimiter MUST be shell-safe. '|' was interpreted as
+        # a pipe by the remote shell ("bash: %T: command not found"), so squeue
+        # silently never worked over SSH and sacct carried every poll. Use ','.
+        result = self._run_cmd(["squeue", f"--job={job_id}", "--format=%i,%T", "--noheader"])
         if result.returncode == 255:
             # SSH itself failed (255) → cluster unreachable, NOT failed.
             return PollResult(state=keep, resource={}, reachable=False)
         # Any OTHER non-zero (e.g. "Invalid job id specified" for an aged-out
-        # job) means squeue ran but the job isn't in the live queue → consult
-        # sacct rather than guessing.
-        squeue_out = result.stdout.strip()
-
-        # Filter to lines matching our job ID (skip header lines)
-        state_code: str | None = None
-        for line in squeue_out.splitlines():
-            parts = line.split("|")
-            if not parts:
-                continue
-            cell0 = parts[0].strip()
-            # Skip header lines (JOBID is not a numeric job id)
-            if not cell0.isdigit():
-                continue
-            if cell0 == job_id:
-                if len(parts) >= 2:
-                    state_code = parts[1].strip()
-                break
-
+        # job) means squeue ran but the job isn't in the live queue → sacct.
+        state_code = self._squeue_state_for(result.stdout, job_id)
         if state_code is not None:
-            mapped = _SLURM_STATE_MAP.get(state_code, State.RUNNING)
-            return PollResult(state=mapped, resource={})
+            return PollResult(state=_SLURM_STATE_MAP.get(state_code, State.RUNNING), resource={})
 
         # Job not in squeue — use sacct for terminal state + resources
         return self._poll_via_sacct(job_id, keep)
+
+    def poll_many(self, runs: "list[Run]") -> "dict[str, PollResult]":
+        """Batch poll: ONE `squeue -u $USER` for all runs, then sacct only for
+        the few that have left the queue. Avoids one SSH per run per cycle."""
+        results: dict = {}
+        if not runs:
+            return results
+
+        sq = self._run_cmd(["squeue", "-u", "$USER", "--format=%i,%T", "--noheader"])
+        if sq.returncode == 255:
+            # SSH down → everyone unreachable, keep their states.
+            for run in runs:
+                keep = run.state if isinstance(run.state, State) else State.RUNNING
+                results[run.run_id] = PollResult(state=keep, resource={}, reachable=False)
+            return results
+
+        # Parse the whole queue once: job_id -> state code.
+        live: dict[str, str] = {}
+        for line in sq.stdout.splitlines():
+            parts = line.split(",")
+            if len(parts) >= 2 and parts[0].strip().isdigit():
+                live[parts[0].strip()] = parts[1].strip()
+
+        for run in runs:
+            keep = run.state if isinstance(run.state, State) else State.RUNNING
+            jid = run.remote_job_id
+            if not jid:
+                results[run.run_id] = PollResult(state=State.FAILED, resource={})
+            elif jid in live:
+                results[run.run_id] = PollResult(
+                    state=_SLURM_STATE_MAP.get(live[jid], State.RUNNING), resource={}
+                )
+            else:
+                # Left the queue → sacct (only for these, not the whole sweep).
+                results[run.run_id] = self._poll_via_sacct(jid, keep)
+        return results
+
+    @staticmethod
+    def _squeue_state_for(stdout: str, job_id: str) -> str | None:
+        """Extract the state code for *job_id* from comma-delimited squeue output."""
+        for line in stdout.splitlines():
+            parts = line.split(",")
+            if parts and parts[0].strip() == job_id and len(parts) >= 2:
+                return parts[1].strip()
+        return None
 
     def collect(self, run: "Run") -> CollectResult:
         """Collect results: rsync remote workdir to local mirror, parse sacct."""

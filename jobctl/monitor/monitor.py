@@ -338,30 +338,58 @@ class Monitor:
     # ------------------------------------------------------------------
 
     async def poll_runs(self) -> None:
-        """Poll all SUBMITTED/RUNNING runs; update state; call on_terminal."""
-        # Fetch runs in pollable states
+        """Poll all pollable runs and transition state.
+
+        Runs are grouped by (backend, server) and polled in ONE batch call per
+        group (backend.poll_many) — so a sweep of N SLURM jobs costs one
+        `squeue` per cycle, not N SSH connections (the storm that throttled the
+        login node and triggered the false-stuck cascade).
+        """
         runs: list[Run] = []
         for state in _POLLABLE_STATES:
             runs.extend(self.store.list_runs(state=state))
+        if not runs:
+            return
 
+        # Group by (backend, server)
+        groups: dict[tuple, list[Run]] = {}
         for run in runs:
+            groups.setdefault((run.backend or "local", run.server), []).append(run)
+
+        for (_bname, _server), group in groups.items():
+            backend = self._get_backend_for_run(group[0])
+            if backend is None:
+                for run in group:
+                    logger.warning("No backend for run=%s; skipping poll", run.run_id)
+                continue
             try:
-                await self._poll_one(run)
-            except Exception as exc:
-                logger.exception(
-                    "poll_runs: error polling run=%s: %s", run.run_id, exc
+                results = await asyncio.wait_for(
+                    asyncio.to_thread(backend.poll_many, group),
+                    timeout=self._poll_call_timeout,
                 )
+            except (asyncio.TimeoutError, Exception) as exc:
+                logger.warning(
+                    "poll_many failed/timed out for %s/%s: %s", _bname, _server, exc
+                )
+                for run in group:
+                    self.store.update_run(run.run_id, health=Health.NO_HEARTBEAT)
+                continue
+            for run in group:
+                poll = results.get(run.run_id)
+                if poll is None:
+                    self.store.update_run(run.run_id, health=Health.NO_HEARTBEAT)
+                    continue
+                try:
+                    await self._apply_poll(run, poll)
+                except Exception as exc:
+                    logger.exception("apply_poll error run=%s: %s", run.run_id, exc)
 
     async def _poll_one(self, run: Run) -> None:
-        """Poll a single run and transition state as needed."""
+        """Poll a single run (fetch + apply). Kept for direct callers/tests."""
         backend = self._get_backend_for_run(run)
         if backend is None:
             logger.warning("No backend for run=%s; skipping poll", run.run_id)
             return
-
-        prev_state = run.state
-        # Poll off the event loop with a hard timeout so a hung backend (e.g.
-        # an SSH that won't connect) can never freeze monitoring.
         try:
             poll = await asyncio.wait_for(
                 asyncio.to_thread(backend.poll, run),
@@ -371,7 +399,11 @@ class Monitor:
             logger.warning("poll failed/timed out for run=%s: %s", run.run_id, exc)
             self.store.update_run(run.run_id, health=Health.NO_HEARTBEAT)
             return
+        await self._apply_poll(run, poll)
 
+    async def _apply_poll(self, run: Run, poll) -> None:
+        """Apply a fetched PollResult to *run*: transition state as needed."""
+        prev_state = run.state
         now_iso = datetime.now(timezone.utc).isoformat()
 
         # --- Unreachable: backend could not determine the job's state ---
