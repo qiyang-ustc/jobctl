@@ -229,6 +229,23 @@ class Monitor:
         # Track when we last probed servers
         self._last_probe_time: float = 0.0
 
+        # macOS desktop notifications. A burst of terminal transitions is
+        # coalesced into ONE "N jobs finished" banner (the "series" signal).
+        # Disabled unless explicitly enabled AND we're on a mac with osascript —
+        # a silent no-op everywhere else (incl. tests / CI).
+        self._mac_coalescer = None
+        if config.get("notify_macos_enabled", False):
+            try:
+                from jobctl.notify.macos import MacNotifyCoalescer, is_macos_available
+                if is_macos_available():
+                    self._mac_coalescer = MacNotifyCoalescer(
+                        window=float(config.get("notify_window_seconds", 15.0)),
+                        sound=(config.get("notify_sound") or None),
+                    )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("macOS notifier init failed: %s", exc)
+                self._mac_coalescer = None
+
     # ------------------------------------------------------------------
     # run_loop
     # ------------------------------------------------------------------
@@ -648,6 +665,18 @@ class Monitor:
                     run.run_id,
                     exc,
                 )
+
+        # 9. Feed the macOS desktop-notification coalescer (best-effort).
+        if self._mac_coalescer is not None:
+            try:
+                label = getattr(run, "title", None) or jobfile.name or run.run_id
+                self._mac_coalescer.add({
+                    "title": label,
+                    "state": run.state.value if hasattr(run.state, "value") else run.state,
+                    "match": match.value if hasattr(match, "value") else match,
+                })
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning("macOS notify enqueue failed for run=%s: %s", run.run_id, exc)
 
     # ------------------------------------------------------------------
     # Internal helpers

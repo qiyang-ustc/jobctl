@@ -31,6 +31,12 @@ class Config:
 
     # Optional analysis
     deepseek_api_key: str = ""
+    gemini_api_key: str = ""
+
+    # Desktop notifications (macOS). Enabled by default; a silent no-op off macOS.
+    notify_macos_enabled: bool = True
+    notify_sound: str = ""  # e.g. "Glass"; empty => silent banner
+    notify_window_seconds: float = 15.0  # coalesce a burst into one "series" banner
 
 
 _DEFAULT_CLUSTER_YAML = os.path.expanduser("~/.cluster.yaml")
@@ -95,9 +101,17 @@ def load_config(
                 cfg.daemon_port = int(jc["daemon_port"])
             if "daemon_host" in jc:
                 cfg.daemon_host = jc["daemon_host"]
+            if "notify_macos_enabled" in jc:
+                cfg.notify_macos_enabled = bool(jc["notify_macos_enabled"])
+            if "notify_sound" in jc:
+                cfg.notify_sound = str(jc["notify_sound"])
+            if "notify_window_seconds" in jc:
+                cfg.notify_window_seconds = float(jc["notify_window_seconds"])
 
     # Override from environment
     if os.environ.get("DEEPSEEK_API_KEY"):
         cfg.deepseek_api_key = os.environ["DEEPSEEK_API_KEY"]
+    if os.environ.get("GEMINI_API_KEY"):
+        cfg.gemini_api_key = os.environ["GEMINI_API_KEY"]
 
     return cfg

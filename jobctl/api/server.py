@@ -260,6 +260,9 @@ def _register_routes(app: FastAPI) -> None:
             jobfile_name (str, optional)
             params (dict, optional)
             backend_override (dict, optional) — {backend, server, task}
+            title (str, optional) — human-readable label: what this run is for
+            note (str, optional) — freeform description
+            tags (list[str], optional) — classification / loose grouping
         """
         from jobctl.jobfile import resolve_params, render_command, input_hashes as calc_input_hashes
         from jobctl.backends.base import select_backend, get_backend
@@ -305,7 +308,7 @@ def _register_routes(app: FastAPI) -> None:
         if body.get("reuse") and memory_hint.get("reuse_eligible") and memory_hint.get("exact_match_run_id"):
             prior = store.get_run(memory_hint["exact_match_run_id"])
             if prior is not None:
-                result = _run_to_dict(prior)
+                result = _run_to_dict(prior, jf.name)
                 result["memory_hint"] = memory_hint
                 result["reused"] = True
                 return result
@@ -344,6 +347,9 @@ def _register_routes(app: FastAPI) -> None:
             expectation_match=None,
             observation_card=None,
             slurm_request=body.get("resources") or None,
+            title=(body.get("title") or None),
+            note=(body.get("note") or None),
+            tags=(body.get("tags") or None),
         )
         store.add_run(run)
 
@@ -374,7 +380,7 @@ def _register_routes(app: FastAPI) -> None:
             store.update_run(run_id, state=State.FAILED)
 
         run = store.get_run(run_id)
-        result = _run_to_dict(run)
+        result = _run_to_dict(run, jf.name)
         result["memory_hint"] = memory_hint
         return result
 
@@ -388,7 +394,12 @@ def _register_routes(app: FastAPI) -> None:
         store = _store(request)
         state_filter = StateEnum(state) if state else None
         runs = store.list_runs(state=state_filter, jobfile_id=jobfile_id)
-        return [_run_to_dict(r) for r in runs]
+        name_cache: dict[str, str | None] = {}
+        for r in runs:
+            if r.jobfile_id not in name_cache:
+                jf = store.get_jobfile(r.jobfile_id)
+                name_cache[r.jobfile_id] = jf.name if jf else None
+        return [_run_to_dict(r, name_cache.get(r.jobfile_id)) for r in runs]
 
     @app.get("/runs/{run_id}")
     async def get_run(run_id: str, request: Request):
@@ -402,7 +413,30 @@ def _register_routes(app: FastAPI) -> None:
         if "text/html" in accept and "application/json" not in accept:
             return await _ui_run_detail_impl(run_id, request)
 
-        return _run_to_dict(run)
+        return _run_dict_with_name(store, run)
+
+    @app.patch("/runs/{run_id}")
+    async def patch_run(run_id: str, body: dict, request: Request):
+        """Edit a run's human-readable identity (title / note / tags).
+
+        Body may contain any subset of {title, note, tags}. Empty string / empty
+        list clears the field. Other run fields are immutable here.
+        """
+        store = _store(request)
+        run = store.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        fields: dict[str, Any] = {}
+        if "title" in body:
+            fields["title"] = body["title"] or None
+        if "note" in body:
+            fields["note"] = body["note"] or None
+        if "tags" in body:
+            fields["tags"] = body["tags"] or None
+        if fields:
+            store.update_run(run_id, **fields)
+        return _run_dict_with_name(store, store.get_run(run_id))
 
     @app.post("/runs/{run_id}/cancel")
     async def cancel_run(run_id: str, request: Request):
@@ -429,7 +463,7 @@ def _register_routes(app: FastAPI) -> None:
 
         store.update_run(run_id, state=State.CANCELLED)
         run = store.get_run(run_id)
-        return _run_to_dict(run)
+        return _run_dict_with_name(store, run)
 
     @app.post("/runs/{run_id}/rerun")
     async def rerun(run_id: str, request: Request):
@@ -478,6 +512,9 @@ def _register_routes(app: FastAPI) -> None:
             resource_summary={},
             expectation_match=None,
             observation_card=None,
+            title=orig.title,
+            note=orig.note,
+            tags=orig.tags,
         )
         store.add_run(new_run)
 
@@ -497,7 +534,7 @@ def _register_routes(app: FastAPI) -> None:
             store.update_run(new_run_id, state=State.FAILED)
 
         new_run = store.get_run(new_run_id)
-        return _run_to_dict(new_run)
+        return _run_dict_with_name(store, new_run)
 
     @app.get("/runs/{run_id}/logs", response_class=PlainTextResponse)
     async def get_logs(
@@ -683,45 +720,7 @@ def _register_routes(app: FastAPI) -> None:
         templates = request.app.state.templates
 
         servers = store.list_servers()
-        all_runs = store.list_runs()
-
-        # Augment runs with jobfile name (for display)
-        jf_cache: dict[str, str] = {}
-        for run in all_runs:
-            if run.jobfile_id not in jf_cache:
-                jf = store.get_jobfile(run.jobfile_id)
-                jf_cache[run.jobfile_id] = jf.name if jf else run.jobfile_id
-
-        def _augment(run):
-            run.__dict__["jobfile_name"] = jf_cache.get(run.jobfile_id, "")
-            run.__dict__["expectation_match"] = (
-                run.expectation_match.value
-                if hasattr(run.expectation_match, "value")
-                else run.expectation_match
-            )
-            return run
-
-        for run in all_runs:
-            _augment(run)
-
-        # Build buckets
-        running   = [r for r in all_runs if r.state.value in ("running", "submitted")]
-        queued    = [r for r in all_runs if r.state.value == "pending"]
-        stuck     = [r for r in all_runs if r.state.value == "stuck"]
-        weak      = [r for r in all_runs if r.expectation_match == "weak_signal"]
-        completed = [r for r in all_runs if r.state.value == "completed" and r.expectation_match != "weak_signal"]
-        failed    = [r for r in all_runs if r.state.value in ("failed", "cancelled", "timeout")]
-
-        class Buckets:
-            pass
-
-        buckets = Buckets()
-        buckets.running   = running
-        buckets.queued    = queued
-        buckets.stuck     = stuck
-        buckets.weak      = weak
-        buckets.completed = completed
-        buckets.failed    = failed
+        buckets = _build_ui_buckets(store)
 
         return templates.TemplateResponse(
             request,
@@ -730,6 +729,7 @@ def _register_routes(app: FastAPI) -> None:
                 "servers": servers,
                 "buckets": buckets,
                 "version": request.app.state.version,
+                "page": "dashboard",
             },
         )
 
@@ -801,6 +801,10 @@ def _register_routes(app: FastAPI) -> None:
             "server": run.server,
             "observation_card": run.observation_card,
             "slurm_request": getattr(run, "slurm_request", None),
+            "title": getattr(run, "title", None),
+            "note": getattr(run, "note", None),
+            "tags": getattr(run, "tags", None),
+            "display_title": _display_title(run, jobfile_name),
         }
 
         # Normalize artifact types for template
@@ -910,38 +914,7 @@ def _register_routes(app: FastAPI) -> None:
             return HTMLResponse(content=html)
 
         # Default: return run buckets fragment
-        all_runs = store.list_runs()
-        jf_cache: dict[str, str] = {}
-        for run in all_runs:
-            if run.jobfile_id not in jf_cache:
-                jf = store.get_jobfile(run.jobfile_id)
-                jf_cache[run.jobfile_id] = jf.name if jf else run.jobfile_id
-
-        for run in all_runs:
-            run.__dict__["jobfile_name"] = jf_cache.get(run.jobfile_id, "")
-            run.__dict__["expectation_match"] = (
-                run.expectation_match.value
-                if hasattr(run.expectation_match, "value")
-                else run.expectation_match
-            )
-
-        running   = [r for r in all_runs if r.state.value in ("running", "submitted")]
-        queued    = [r for r in all_runs if r.state.value == "pending"]
-        stuck     = [r for r in all_runs if r.state.value == "stuck"]
-        weak      = [r for r in all_runs if r.expectation_match == "weak_signal"]
-        completed = [r for r in all_runs if r.state.value == "completed" and r.expectation_match != "weak_signal"]
-        failed    = [r for r in all_runs if r.state.value in ("failed", "cancelled", "timeout")]
-
-        class Buckets:
-            pass
-
-        buckets = Buckets()
-        buckets.running   = running
-        buckets.queued    = queued
-        buckets.stuck     = stuck
-        buckets.weak      = weak
-        buckets.completed = completed
-        buckets.failed    = failed
+        buckets = _build_ui_buckets(store)
 
         return templates.TemplateResponse(
             request,
@@ -1017,7 +990,7 @@ def _jobfile_to_dict(jf) -> dict:
     }
 
 
-def _run_to_dict(run) -> dict:
+def _run_to_dict(run, jobfile_name: str | None = None) -> dict:
     return {
         "run_id": run.run_id,
         "jobfile_id": run.jobfile_id,
@@ -1046,7 +1019,82 @@ def _run_to_dict(run) -> dict:
         ),
         "observation_card": run.observation_card,
         "slurm_request": getattr(run, "slurm_request", None),
+        "title": getattr(run, "title", None),
+        "note": getattr(run, "note", None),
+        "tags": getattr(run, "tags", None),
+        "display_title": _display_title(run, jobfile_name),
     }
+
+
+def _run_dict_with_name(store, run) -> dict:
+    """``_run_to_dict`` with the JobFile name resolved so ``display_title`` reads
+    as "<jobfile> · <params>" instead of falling back to the jobfile_id hash."""
+    if run is None:
+        return _run_to_dict(run)
+    jf = store.get_jobfile(run.jobfile_id)
+    return _run_to_dict(run, jf.name if jf else None)
+
+
+def _display_title(run, jobfile_name: str | None = None) -> str:
+    """Human-readable label for a run.
+
+    Uses the explicit title when set; otherwise derives "<jobfile> · <≤3 key
+    params>" so a run is never shown as just an opaque hash. ``jobfile_name`` is
+    the resolved JobFile name when available (the UI passes it); falls back to
+    the jobfile_id.
+    """
+    title = getattr(run, "title", None)
+    if title:
+        return title
+    base = jobfile_name or getattr(run, "jobfile_id", "") or "run"
+    params = getattr(run, "params", None) or {}
+    if params:
+        keys = list(params.keys())[:3]
+        ptxt = ", ".join(f"{k}={params[k]}" for k in keys)
+        return f"{base} · {ptxt}"
+    return base
+
+
+class _Buckets:
+    """Lightweight attribute bag for the 6 dashboard run buckets."""
+    running: list
+    queued: list
+    stuck: list
+    weak: list
+    completed: list
+    failed: list
+
+
+def _build_ui_buckets(store) -> "_Buckets":
+    """Augment every run with jobfile_name + display_title and classify into the
+    6 dashboard buckets.
+
+    Shared by the dashboard page (GET /) and the HTMX poll partial (GET /ui/poll)
+    so the bucket classification can never drift out of sync between them.
+    """
+    all_runs = store.list_runs()
+    jf_cache: dict[str, str] = {}
+    for run in all_runs:
+        if run.jobfile_id not in jf_cache:
+            jf = store.get_jobfile(run.jobfile_id)
+            jf_cache[run.jobfile_id] = jf.name if jf else run.jobfile_id
+    for run in all_runs:
+        name = jf_cache.get(run.jobfile_id, "")
+        run.__dict__["jobfile_name"] = name
+        run.__dict__["display_title"] = _display_title(run, name)
+        run.__dict__["expectation_match"] = (
+            run.expectation_match.value
+            if hasattr(run.expectation_match, "value")
+            else run.expectation_match
+        )
+    b = _Buckets()
+    b.running   = [r for r in all_runs if r.state.value in ("running", "submitted")]
+    b.queued    = [r for r in all_runs if r.state.value == "pending"]
+    b.stuck     = [r for r in all_runs if r.state.value == "stuck"]
+    b.weak      = [r for r in all_runs if r.expectation_match == "weak_signal"]
+    b.completed = [r for r in all_runs if r.state.value == "completed" and r.expectation_match != "weak_signal"]
+    b.failed    = [r for r in all_runs if r.state.value in ("failed", "cancelled", "timeout")]
+    return b
 
 
 def _artifact_to_dict(art) -> dict:

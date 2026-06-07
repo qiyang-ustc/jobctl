@@ -147,6 +147,9 @@ def run(
     server: Annotated[Optional[str], typer.Option("--server", help="Server name override")] = None,
     reuse: Annotated[bool, typer.Option("--reuse/--no-reuse", help="Skip if reuse-eligible")] = False,
     callback: Annotated[Optional[str], typer.Option("--callback", help="Callback URL")] = None,
+    title: Annotated[Optional[str], typer.Option("--title", help="Human-readable label: what this run is for")] = None,
+    note: Annotated[Optional[str], typer.Option("--note", help="Freeform description of this run")] = None,
+    tag: Annotated[Optional[list[str]], typer.Option("--tag", help="Tag for classification/grouping (repeatable)")] = None,
     mem: Annotated[Optional[str], typer.Option("--mem", help="SLURM memory (e.g. 100M, 4G)")] = None,
     cpus: Annotated[Optional[int], typer.Option("--cpus", help="SLURM cpus-per-task")] = None,
     time_limit: Annotated[Optional[str], typer.Option("--time", help="SLURM time limit (e.g. 00:11:00)")] = None,
@@ -203,6 +206,9 @@ def run(
         "reuse": reuse,
         "callback_url": callback,
         "resources": resources or None,
+        "title": title,
+        "note": note,
+        "tags": tag or None,
     }
     if os.path.isfile(jobfile_ref):
         try:
@@ -272,11 +278,13 @@ def run(
         # Exit code reflects whether the job RAN (operational), not result quality.
         raise typer.Exit(_exit_code_for(final.get("state")))
     else:
-        # Background mode — print {run_id} immediately
+        # Background mode — print {run_id} immediately (with a human label when
+        # one is known, so the line isn't just an opaque hash).
         if json_out:
             _print_json(result)
         else:
-            typer.echo(run_id)
+            label = result.get("display_title") or title
+            typer.echo(f"{run_id} — {label}" if label else run_id)
 
 
 # ---------------------------------------------------------------------------
@@ -337,6 +345,12 @@ def status(
         state = run.get("state", "unknown")
         health = run.get("health", "")
         typer.echo(f"run_id:  {run_id}")
+        label = run.get("display_title") or run.get("title")
+        if label:
+            typer.echo(f"title:   {label}")
+        tags = run.get("tags")
+        if tags:
+            typer.echo(f"tags:    {', '.join(tags)}")
         typer.echo(f"state:   {state}")
         typer.echo(f"health:  {health}")
         typer.echo(f"backend: {run.get('backend')}  server: {run.get('server')}")
@@ -763,6 +777,10 @@ def serve(
         config["run_dir"] = _cfg.run_dir
     if db_path:
         config["db_path"] = db_path
+    # Desktop-notification settings reach the Monitor via this dict.
+    config["notify_macos_enabled"] = _cfg.notify_macos_enabled
+    config["notify_sound"] = _cfg.notify_sound
+    config["notify_window_seconds"] = _cfg.notify_window_seconds
 
     application = create_app(config=config, start_monitor=True)
     uvicorn.run(application, host=host, port=port, reload=reload)

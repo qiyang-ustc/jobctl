@@ -95,6 +95,9 @@ class ApiClient:
         reuse: bool = False,
         callback_url: str | None = None,
         resources: dict | None = None,
+        title: str | None = None,
+        note: str | None = None,
+        tags: list[str] | None = None,
     ) -> dict:
         """Submit a new run; returns the run dict (includes memory_hint).
 
@@ -105,6 +108,8 @@ class ApiClient:
                       the run reaches a terminal state.
         resources:    SLURM resource overrides (partition/account/time/mem/cpus)
                       applied on top of per-server config for slurm submits.
+        title/note/tags: human-readable identity — what this run is *for*. Shown
+                      in the CLI and the web panel instead of a bare hash.
         """
         body: dict = {"params": params or {}}
         if jobfile_id:
@@ -119,6 +124,12 @@ class ApiClient:
             body["callback_url"] = callback_url
         if resources:
             body["resources"] = resources
+        if title:
+            body["title"] = title
+        if note:
+            body["note"] = note
+        if tags:
+            body["tags"] = tags
         resp = self._post("/runs", json=body)
         self._raise_for(resp, "submit")
         return resp.json()

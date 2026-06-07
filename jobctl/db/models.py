@@ -93,6 +93,13 @@ class Run:
     # Resolved SLURM submission request (partition/account/time/mem/cpus + job_id).
     # None for non-SLURM backends. Surfaced in the run-detail panel.
     slurm_request: dict | None = None
+    # Human-readable identity: what this run is *for*. Stored in the run row (not
+    # derived) so it survives jobfile rename/delete. All optional; when title is
+    # absent the UI/CLI fall back to "<jobfile> · <key params>" so a run is never
+    # just an opaque hash.
+    title: str | None = None
+    note: str | None = None
+    tags: list[str] | None = None
 
 
 @dataclass
@@ -198,6 +205,9 @@ CREATE TABLE IF NOT EXISTS runs (
     expectation_match TEXT,
     observation_card TEXT,
     slurm_request TEXT,
+    title TEXT,
+    note TEXT,
+    tags TEXT,
     FOREIGN KEY (jobfile_id) REFERENCES jobfiles(id)
 )
 """

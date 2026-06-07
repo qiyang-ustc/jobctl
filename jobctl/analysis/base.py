@@ -58,8 +58,10 @@ class Analyzer(ABC):
 def get_analyzer(config: dict) -> Analyzer:
     """Return the appropriate Analyzer based on environment.
 
-    Returns DeepSeekAnalyzer if DEEPSEEK_API_KEY is set in the environment,
-    otherwise returns OfflineAnalyzer (deterministic, no network).
+    Selection order:
+      1. DeepSeekAnalyzer   if DEEPSEEK_API_KEY is set
+      2. GeminiAnalyzer     if GEMINI_API_KEY is set (httpx-only, no SDK)
+      3. OfflineAnalyzer    (deterministic, no network) otherwise
 
     Args:
         config: jobctl config dict (currently unused but reserved for future
@@ -68,9 +70,13 @@ def get_analyzer(config: dict) -> Analyzer:
     Returns:
         An Analyzer instance.
     """
-    api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-    if api_key:
+    deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    if deepseek_key:
         from jobctl.analysis.deepseek import DeepSeekAnalyzer
-        return DeepSeekAnalyzer(api_key=api_key)
+        return DeepSeekAnalyzer(api_key=deepseek_key)
+    gemini_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if gemini_key:
+        from jobctl.analysis.gemini import GeminiAnalyzer
+        return GeminiAnalyzer(api_key=gemini_key)
     from jobctl.analysis.offline import OfflineAnalyzer
     return OfflineAnalyzer()
