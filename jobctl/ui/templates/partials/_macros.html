@@ -1,0 +1,45 @@
+{# Shared UI macros — run-id chips and run rows #}
+
+{# Truncated, copyable run-id chip: shows run-XXXX…YYYY, copies the FULL id. #}
+{% macro id_chip(run_id) %}
+{% set rid = run_id|string %}
+<span class="id-chip">
+  <span class="id-text">{% if rid|length > 12 %}{{ rid[:8] }}…{{ rid[-4:] }}{% else %}{{ rid }}{% endif %}</span>
+  <button class="copy-btn" type="button" data-id="{{ rid }}" title="Copy run id" aria-label="Copy run id">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="8" height="8" rx="1.5"/><path d="M3 10.5V3.5A1 1 0 0 1 4 2.5h6"/></svg>
+  </button>
+</span>
+{% endmacro %}
+
+{# Full, untruncated run-id with an always-visible copy button (detail hero). #}
+{% macro id_chip_full(run_id) %}
+{% set rid = run_id|string %}
+<span class="id-chip id-chip-full mono">
+  <span class="id-text">{{ rid }}</span>
+  <button class="copy-btn" type="button" data-id="{{ rid }}" title="Copy run id" aria-label="Copy run id">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="8" height="8" rx="1.5"/><path d="M3 10.5V3.5A1 1 0 0 1 4 2.5h6"/></svg>
+  </button>
+</span>
+{% endmacro %}
+
+{# One run row for the grouped bucket/runs tables. `dotkey` is the status hue. #}
+{% macro run_row(run) %}
+{% set st = run.state | enumval %}
+{% set match = (run.expectation_match | enumval) if run.expectation_match else None %}
+{% set dotkey = (match | replace('_','-')) if match in ('weak_signal', 'bad_signal') else st %}
+<a href="/runs/{{ run.run_id }}" class="run-row">
+  <span class="run-status-dot dot-{{ dotkey | replace('_','-') }}"></span>
+  {{ id_chip(run.run_id) }}
+  <span class="run-title">{{ run.display_title or run.jobfile_name or run.run_id }}</span>
+  {% if run.tags %}
+  <span class="run-tags">
+    {% for t in run.tags[:3] %}<span class="tag-chip">{{ t }}</span>{% endfor %}
+  </span>
+  {% endif %}
+  {% if match and match != st %}
+  <span class="badge badge-{{ match | replace('_','-') }}">{{ match }}</span>
+  {% endif %}
+  {% if run.server %}<span class="run-server">{{ run.server }}</span>{% endif %}
+  <span class="run-time tabnum">{{ (run.submitted_at or '')[:16] }}</span>
+</a>
+{% endmacro %}

@@ -21,37 +21,63 @@
       var b = document.querySelector('.theme-btn');
       if (b) b.textContent = document.documentElement.getAttribute('data-theme') === 'light' ? '☾' : '☀';
     });
+    /* Event-delegated clipboard copy for run-id chips. Copies the FULL id from
+       data-id, then briefly swaps the icon to a check. Works after HTMX swaps. */
+    document.addEventListener('click', function(ev){
+      var btn = ev.target.closest && ev.target.closest('.copy-btn');
+      if (!btn) return;
+      ev.preventDefault();
+      var id = btn.getAttribute('data-id');
+      if (!id) return;
+      var done = function(){
+        btn.classList.add('copied');
+        var prev = btn.innerHTML;
+        btn.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-7"/></svg>';
+        setTimeout(function(){ btn.classList.remove('copied'); btn.innerHTML = prev; }, 1100);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(id).then(done, function(){});
+      } else {
+        var ta = document.createElement('textarea'); ta.value = id;
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); done(); } catch (e) {}
+        document.body.removeChild(ta);
+      }
+    });
   </script>
-  <link rel="stylesheet" href="/static/app.css?v=5"/>
+  <link rel="stylesheet" href="/static/app.css?v=6"/>
   <script src="/static/htmx.min.js" defer></script>
   <script src="/static/i18n.js" defer></script>
 </head>
 <body>
 <div class="layout">
 
-  <nav class="topnav" role="navigation">
-    <a href="/" class="topnav-logo">jobctl</a>
-    <div class="topnav-nav">
-      <a href="/" data-i18n="nav.dashboard">Dashboard</a>
-      <a href="/runs" data-i18n="nav.runs">Runs</a>
-      <a href="/jobfiles" data-i18n="nav.jobs">Jobs</a>
-      <a href="/servers" data-i18n="nav.servers">Servers</a>
+  <aside class="sidebar" role="navigation">
+    <a href="/" class="sidebar-logo">
+      <span class="logo-dot"></span>jobctl<span class="logo-slash">//</span>
+    </a>
+    <nav class="sidebar-nav">
+      <a href="/" class="nav-item {{ 'active' if page == 'dashboard' else '' }}" data-i18n="nav.dashboard">Dashboard</a>
+      <a href="/runs" class="nav-item {{ 'active' if page == 'runs' else '' }}" data-i18n="nav.runs">Runs</a>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="lang-toggle" aria-label="Language toggle">
+        <button class="lang-btn" data-lang="en">EN</button>
+        <button class="lang-btn" data-lang="zh">中文</button>
+      </div>
+      <button class="theme-btn" type="button" onclick="window.__toggleTheme()"
+              aria-label="Toggle light/dark theme" title="Toggle theme">☀</button>
     </div>
-    <div class="lang-toggle" aria-label="Language toggle">
-      <button class="lang-btn" data-lang="en">EN</button>
-      <button class="lang-btn" data-lang="zh">中文</button>
-    </div>
-    <button class="theme-btn" type="button" onclick="window.__toggleTheme()"
-            aria-label="Toggle light/dark theme" title="Toggle theme">☀</button>
-  </nav>
+  </aside>
 
-  <main>
-    {% block content %}{% endblock %}
-  </main>
-
-  <footer>
-    <span data-i18n="footer.label">jobctl</span> v{{ version }}
-  </footer>
+  <div class="main-wrap">
+    <main>
+      {% block content %}{% endblock %}
+    </main>
+    <footer>
+      <span data-i18n="footer.label">jobctl</span> v{{ version }}
+    </footer>
+  </div>
 
 </div>
 </body>

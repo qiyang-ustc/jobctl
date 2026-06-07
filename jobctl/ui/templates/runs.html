@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Runs — jobctl{% endblock %}
+
+{% block content %}
+{% import "partials/_macros.html" as ui %}
+
+<div class="page-head">
+  <h1 data-i18n="nav.runs">Runs</h1>
+  <div class="page-sub"><span>{{ runs | length }}</span> <span data-i18n="runs.total">total</span></div>
+</div>
+
+<div class="bucket-body">
+  {% if runs %}
+  {% for run in runs %}
+  {{ ui.run_row(run) }}
+  {% endfor %}
+  {% else %}
+  <div class="empty-bucket" data-i18n="empty.runs">No runs yet.</div>
+  {% endif %}
+</div>
+
+{% endblock %}

@@ -12,6 +12,9 @@ const I18N = {
     /* dashboard sections */
     "section.servers":   "Servers",
     "section.runs":      "Runs",
+    "runs.total":        "total",
+    "action.copy":       "Copy",
+    "col.run":           "Run",
 
     /* bucket labels */
     "bucket.running":   "Running",
@@ -114,6 +117,9 @@ const I18N = {
     /* dashboard sections */
     "section.servers":   "服务器",
     "section.runs":      "运行列表",
+    "runs.total":        "总计",
+    "action.copy":       "复制",
+    "col.run":           "运行",
 
     /* bucket labels */
     "bucket.running":   "运行中",

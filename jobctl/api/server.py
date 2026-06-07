@@ -392,6 +392,12 @@ def _register_routes(app: FastAPI) -> None:
     ):
         from jobctl.db.models import State as StateEnum
         store = _store(request)
+
+        # Content negotiation: HTML page for browsers, JSON for API clients.
+        accept = request.headers.get("accept", "")
+        if "text/html" in accept and "application/json" not in accept:
+            return await _ui_runs_list_impl(request)
+
         state_filter = StateEnum(state) if state else None
         runs = store.list_runs(state=state_filter, jobfile_id=jobfile_id)
         name_cache: dict[str, str | None] = {}
@@ -400,6 +406,40 @@ def _register_routes(app: FastAPI) -> None:
                 jf = store.get_jobfile(r.jobfile_id)
                 name_cache[r.jobfile_id] = jf.name if jf else None
         return [_run_to_dict(r, name_cache.get(r.jobfile_id)) for r in runs]
+
+    async def _ui_runs_list_impl(request: Request) -> HTMLResponse:
+        """Render the /runs list page (all runs, newest first) as HTML."""
+        store = _store(request)
+        templates = request.app.state.templates
+
+        runs = store.list_runs()
+        jf_cache: dict[str, str] = {}
+        for run in runs:
+            if run.jobfile_id not in jf_cache:
+                jf = store.get_jobfile(run.jobfile_id)
+                jf_cache[run.jobfile_id] = jf.name if jf else run.jobfile_id
+        for run in runs:
+            name = jf_cache.get(run.jobfile_id, "")
+            run.__dict__["jobfile_name"] = name
+            run.__dict__["display_title"] = _display_title(run, name)
+            run.__dict__["expectation_match"] = (
+                run.expectation_match.value
+                if hasattr(run.expectation_match, "value")
+                else run.expectation_match
+            )
+
+        # Newest first by submitted_at (ISO strings sort lexicographically).
+        runs.sort(key=lambda r: (r.submitted_at or ""), reverse=True)
+
+        return templates.TemplateResponse(
+            request,
+            "runs.html",
+            {
+                "runs": runs,
+                "version": request.app.state.version,
+                "page": "runs",
+            },
+        )
 
     @app.get("/runs/{run_id}")
     async def get_run(run_id: str, request: Request):
@@ -835,6 +875,7 @@ def _register_routes(app: FastAPI) -> None:
                 "per_criterion": per_criterion,
                 "per_criterion_map": per_criterion_map,
                 "version": request.app.state.version,
+                "page": None,
             },
         )
 
@@ -868,6 +909,9 @@ def _register_routes(app: FastAPI) -> None:
                 "server": run.server,
                 "submitted_at": run.submitted_at,
                 "finished_at": run.finished_at,
+                "tags": getattr(run, "tags", None),
+                "title": getattr(run, "title", None),
+                "display_title": _display_title(run, jf.name),
             }))
 
         return templates.TemplateResponse(
@@ -878,6 +922,7 @@ def _register_routes(app: FastAPI) -> None:
                 "runs": run_objs,
                 "contract": contract,
                 "version": request.app.state.version,
+                "page": None,
             },
         )
 
@@ -913,7 +958,20 @@ def _register_routes(app: FastAPI) -> None:
             )
             return HTMLResponse(content=html)
 
-        # Default: return run buckets fragment
+        # Server-health fragment (HTMX refreshes #server-cards every 15s).
+        # Without this branch, section=servers fell through to the buckets
+        # fragment and HTMX overwrote the server cards with the run list.
+        if section == "servers":
+            return templates.TemplateResponse(
+                request,
+                "partials/servers.html",
+                {
+                    "servers": store.list_servers(),
+                    "version": request.app.state.version,
+                },
+            )
+
+        # Default (section=buckets or unset): return the run-buckets fragment.
         buckets = _build_ui_buckets(store)
 
         return templates.TemplateResponse(

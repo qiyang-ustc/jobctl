@@ -2,11 +2,12 @@
 {% block title %}{{ jobfile.name }} — jobctl{% endblock %}
 
 {% block content %}
+{% import "partials/_macros.html" as ui %}
 
 {# ---- Header ---- #}
-<div class="flex-gap mb-2">
+<div class="page-head flex-gap">
   <h1>{{ jobfile.name }}</h1>
-  <span class="badge">v{{ jobfile.version }}</span>
+  <span class="badge badge-neutral">v{{ jobfile.version }}</span>
 </div>
 
 <div class="detail-grid">
@@ -124,6 +125,7 @@
   <thead>
     <tr>
       <th data-i18n="col.runid">Run ID</th>
+      <th data-i18n="col.run">Run</th>
       <th data-i18n="col.state">State</th>
       <th data-i18n="col.match">Match</th>
       <th data-i18n="col.backend">Backend</th>
@@ -135,7 +137,8 @@
   <tbody>
     {% for run in runs %}
     <tr>
-      <td><a href="/runs/{{ run.run_id }}" class="mono">{{ run.run_id }}</a></td>
+      <td><a href="/runs/{{ run.run_id }}">{{ ui.id_chip(run.run_id) }}</a></td>
+      <td>{{ run.display_title or run.run_id }}</td>
       <td><span class="badge badge-{{ run.state | enumval | replace('_', '-') }}">{{ run.state | enumval }}</span></td>
       <td>
         {% if run.expectation_match %}

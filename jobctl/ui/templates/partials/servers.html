@@ -1,0 +1,59 @@
+{# Server health cards — rendered inline on the dashboard and refreshed by
+   GET /ui/poll?section=servers (HTMX, every 15s). #}
+{% for srv in servers %}
+<div class="server-card {{ 'online' if srv.online else 'offline' }}">
+  <div class="server-header">
+    <span class="server-status-dot {{ 'online' if srv.online else 'offline' }}"></span>
+    <span class="server-name">{{ srv.name }}</span>
+    <span class="badge {{ 'badge-online' if srv.online else 'badge-offline' }}">
+      {{ 'online' if srv.online else 'offline' }}
+    </span>
+    <span class="badge badge-neutral">{{ srv.backend_type }}</span>
+  </div>
+  {% if srv.last_heartbeat %}
+  <div class="server-meta">{{ srv.last_heartbeat[:19] }}</div>
+  {% endif %}
+  {% if srv.note %}
+  <div class="server-meta">{{ srv.note }}</div>
+  {% endif %}
+  {% if srv.online %}
+  <div class="server-resources">
+    {% if srv.cpu %}
+    <div class="resource-bar-wrap">
+      <div class="resource-label"><span>CPU</span><span>{{ (srv.cpu.pct or 0) | int }}%</span></div>
+      <div class="resource-bar">
+        <div class="resource-bar-fill {% if (srv.cpu.pct or 0) > 80 %}high{% elif (srv.cpu.pct or 0) > 60 %}med{% endif %}"
+             style="width: {{ (srv.cpu.pct or 0) | int }}%"></div>
+      </div>
+    </div>
+    {% endif %}
+    {% if srv.mem %}
+    <div class="resource-bar-wrap">
+      <div class="resource-label"><span>Mem</span><span>{{ (srv.mem.pct or 0) | int }}%</span></div>
+      <div class="resource-bar">
+        <div class="resource-bar-fill {% if (srv.mem.pct or 0) > 80 %}high{% elif (srv.mem.pct or 0) > 60 %}med{% endif %}"
+             style="width: {{ (srv.mem.pct or 0) | int }}%"></div>
+      </div>
+    </div>
+    {% endif %}
+    {% if srv.gpu %}
+    <div class="resource-bar-wrap">
+      <div class="resource-label"><span>GPU</span><span>{{ (srv.gpu.pct or 0) | int }}%</span></div>
+      <div class="resource-bar">
+        <div class="resource-bar-fill {% if (srv.gpu.pct or 0) > 80 %}high{% elif (srv.gpu.pct or 0) > 60 %}med{% endif %}"
+             style="width: {{ (srv.gpu.pct or 0) | int }}%"></div>
+      </div>
+    </div>
+    {% endif %}
+    {% if srv.slurm_queue %}
+    <div class="server-meta" style="width:100%">
+      Slurm: {{ srv.slurm_queue.get('running', 0) }} running,
+             {{ srv.slurm_queue.get('pending', 0) }} pending
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+{% else %}
+<div class="text-muted text-sm" data-i18n="empty.servers">No servers registered.</div>
+{% endfor %}

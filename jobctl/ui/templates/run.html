@@ -2,11 +2,12 @@
 {% block title %}Run {{ run.run_id }} — jobctl{% endblock %}
 
 {% block content %}
+{% import "partials/_macros.html" as ui %}
 
 {# ---- Hero Header ---- #}
 <div class="run-hero">
   <div class="run-hero-title">
-    <span class="run-hero-id mono">{{ run.run_id }}</span>
+    <h1>{{ run.display_title or run.run_id }}</h1>
     <div class="run-hero-pills">
       <span class="badge badge-{{ run.state | enumval | replace('_', '-') }}">{{ run.state | enumval }}</span>
       <span class="badge badge-{{ run.health | enumval | replace('_', '-') }}">{{ run.health | enumval }}</span>
@@ -15,6 +16,14 @@
       {% endif %}
     </div>
   </div>
+
+  <div class="run-hero-id">{{ ui.id_chip_full(run.run_id) }}</div>
+
+  {% if run.tags %}
+  <div class="run-hero-tags">
+    {% for t in run.tags %}<span class="tag-chip">{{ t }}</span>{% endfor %}
+  </div>
+  {% endif %}
 
   {# HTMX live poll for active runs #}
   {% if run.state | enumval in ("running", "submitted", "pending") %}
