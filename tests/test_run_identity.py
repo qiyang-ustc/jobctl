@@ -215,3 +215,31 @@ def test_patch_edits_identity(api, tmp_path):
 def test_patch_unknown_run_404(api):
     r = api.patch("/runs/run-does-not-exist", json={"title": "x"})
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# /ui/poll regressions (review findings)
+# ---------------------------------------------------------------------------
+
+def test_poll_servers_returns_server_fragment_not_buckets(api, tmp_path):
+    """section=servers must return the server fragment, never the run buckets.
+    Regression: it used to fall through to buckets, so HTMX overwrote the live
+    server cards with the run list after the first 15s poll."""
+    jf_id = _register_jobfile(api, tmp_path)
+    api.post("/runs", json={"jobfile_id": jf_id})  # ensure buckets WOULD be non-empty
+    body = api.get("/ui/poll", params={"section": "servers"},
+                   headers={"Accept": "text/html"}).text
+    assert "run-row" not in body          # not the buckets fragment
+    assert "empty.servers" in body or "server-card" in body
+
+
+def test_poll_run_id_swaps_only_pills_not_whole_hero(api, tmp_path):
+    """The run-hero live poll must return just the status pills, not a bare
+    fragment that wipes the display_title / id-chip / tags."""
+    jf_id = _register_jobfile(api, tmp_path)
+    run_id = api.post("/runs", json={"jobfile_id": jf_id}).json()["run_id"]
+    resp = api.get("/ui/poll", params={"run_id": run_id}, headers={"Accept": "text/html"})
+    body = resp.text
+    assert "<h1>Run" not in body          # old hero-wiping markup is gone
+    assert "badge-" in body               # returns the status pill(s)
+

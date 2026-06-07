@@ -6,14 +6,11 @@ const I18N = {
     /* nav */
     "nav.dashboard":   "Dashboard",
     "nav.runs":        "Runs",
-    "nav.jobs":        "Jobs",
-    "nav.servers":     "Servers",
 
     /* dashboard sections */
     "section.servers":   "Servers",
     "section.runs":      "Runs",
     "runs.total":        "total",
-    "action.copy":       "Copy",
     "col.run":           "Run",
 
     /* bucket labels */
@@ -111,14 +108,11 @@ const I18N = {
     /* nav */
     "nav.dashboard":   "仪表板",
     "nav.runs":        "运行",
-    "nav.jobs":        "任务",
-    "nav.servers":     "服务器",
 
     /* dashboard sections */
     "section.servers":   "服务器",
     "section.runs":      "运行列表",
     "runs.total":        "总计",
-    "action.copy":       "复制",
     "col.run":           "运行",
 
     /* bucket labels */

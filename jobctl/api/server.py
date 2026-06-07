@@ -949,14 +949,17 @@ def _register_routes(app: FastAPI) -> None:
                 if hasattr(run.expectation_match, "value")
                 else run.expectation_match
             )
-            html = (
-                f'<div class="flex-gap">'
-                f'<h1>Run <span class="mono">{run.run_id}</span></h1>'
-                f'<span class="badge badge-{run_state}">{run_state}</span>'
-                f'<span class="badge badge-{run_health}">{run_health}</span>'
-                f'</div>'
-            )
-            return HTMLResponse(content=html)
+            # Live badges for the run-hero pills (run.html targets #run-hero-pills,
+            # swap=innerHTML). Underscore->hyphen so badge classes match app.css
+            # (badge-no-heartbeat, etc.). The title/id-chip/tags are NOT touched.
+            def _badge(kind: str) -> str:
+                return f'<span class="badge badge-{kind.replace("_", "-")}">{kind}</span>'
+            html = _badge(run_state) + _badge(run_health)
+            if run_match:
+                html += _badge(run_match)
+            # Once terminal, tell HTMX to stop polling (HTTP 286).
+            terminal = run_state in ("completed", "failed", "cancelled", "stuck", "timeout")
+            return HTMLResponse(content=html, status_code=286 if terminal else 200)
 
         # Server-health fragment (HTMX refreshes #server-cards every 15s).
         # Without this branch, section=servers fell through to the buckets

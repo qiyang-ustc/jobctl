@@ -8,7 +8,8 @@
 <div class="run-hero">
   <div class="run-hero-title">
     <h1>{{ run.display_title or run.run_id }}</h1>
-    <div class="run-hero-pills">
+    {# Only the live-changing badges are polled — the title/id/tags stay put. #}
+    <div class="run-hero-pills" id="run-hero-pills">
       <span class="badge badge-{{ run.state | enumval | replace('_', '-') }}">{{ run.state | enumval }}</span>
       <span class="badge badge-{{ run.health | enumval | replace('_', '-') }}">{{ run.health | enumval }}</span>
       {% if run.expectation_match %}
@@ -25,12 +26,13 @@
   </div>
   {% endif %}
 
-  {# HTMX live poll for active runs #}
+  {# HTMX live poll for active runs — swaps ONLY the pills; the server returns
+     HTTP 286 once terminal so polling stops on its own. #}
   {% if run.state | enumval in ("running", "submitted", "pending") %}
   <div hx-get="/ui/poll?run_id={{ run.run_id }}"
        hx-trigger="every 5s"
-       hx-target="closest .run-hero"
-       hx-swap="outerHTML">
+       hx-target="#run-hero-pills"
+       hx-swap="innerHTML">
     <span class="badge badge-running htmx-indicator" data-i18n="label.polling">polling…</span>
   </div>
   {% endif %}
