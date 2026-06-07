@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import math
 import os
 import uuid
 from datetime import datetime, timezone
@@ -76,9 +77,26 @@ def create_app(config: dict | None = None, start_monitor: bool = True) -> FastAP
     if config is None:
         config = {}
 
-    # Resolve DB and run paths
-    db_path = config.get("db_path") or os.path.expanduser("~/.jobctl/jobctl.db")
-    run_dir = config.get("run_dir") or os.path.expanduser("~/.jobctl/runs")
+    # Resolve DB and run paths from one state root. Tests can still pass explicit
+    # db_path/run_dir; production defaults honor JOBCTL_HOME instead of writing
+    # directly under ~/.jobctl from scattered modules.
+    from jobctl.config import (
+        default_db_path,
+        default_jobctl_config_path,
+        default_run_dir,
+        default_state_root,
+    )
+
+    state_root = config.get("state_root") or default_state_root()
+    db_path = config.get("db_path") or default_db_path(state_root)
+    run_dir = config.get("run_dir") or default_run_dir(state_root)
+    config.setdefault("state_root", state_root)
+    config.setdefault("db_path", db_path)
+    config.setdefault("run_dir", run_dir)
+    config.setdefault("jobctl_config_path", default_jobctl_config_path(state_root))
+    config.setdefault("cluster_yaml_path", os.path.expanduser("~/.cluster.yaml"))
+    config.setdefault("daemon_host", "127.0.0.1")
+    config.setdefault("daemon_port", 7421)
 
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     Path(run_dir).mkdir(parents=True, exist_ok=True)
@@ -267,7 +285,7 @@ def _register_routes(app: FastAPI) -> None:
         from jobctl.jobfile import resolve_params, render_command, input_hashes as calc_input_hashes
         from jobctl.backends.base import select_backend, get_backend
         from jobctl.memory.memory import query as mem_query
-        from jobctl.db.models import Run, State, Health
+        from jobctl.db.models import Run, State, Health, Match
 
         store = _store(request)
         cfg = _config(request)
@@ -376,8 +394,29 @@ def _register_routes(app: FastAPI) -> None:
                 monitor._callback_urls[run_id] = callback_url
         except Exception as exc:
             logger.exception("Backend submit failed for run=%s: %s", run_id, exc)
-            from jobctl.db.models import State
-            store.update_run(run_id, state=State.FAILED)
+            from jobctl.monitor.monitor import build_observation_card
+
+            finished_at = datetime.now(timezone.utc).isoformat()
+            store.update_run(
+                run_id,
+                state=State.FAILED,
+                health=Health.WEAK,
+                exit_code=1,
+                finished_at=finished_at,
+                expectation_match=Match.FAILED,
+            )
+            failed_run = store.get_run(run_id)
+            if failed_run is not None:
+                card = build_observation_card(
+                    failed_run,
+                    jf,
+                    [],
+                    Match.FAILED,
+                    [f"Backend submit failed: {exc}"],
+                    Health.WEAK,
+                    request.app.state.analyzer,
+                )
+                store.update_run(run_id, observation_card=card)
 
         run = store.get_run(run_id)
         result = _run_to_dict(run, jf.name)
@@ -617,7 +656,11 @@ def _register_routes(app: FastAPI) -> None:
     @app.get("/servers")
     async def list_servers(request: Request):
         store = _store(request)
-        return [_server_to_dict(s) for s in store.list_servers()]
+        config = _config(request)
+        return [
+            {**_server_to_dict(s), "policy": _policy_snapshot(s, config)}
+            for s in store.list_servers()
+        ]
 
     # ------------------------------------------------------------------
     # /feedback
@@ -759,7 +802,7 @@ def _register_routes(app: FastAPI) -> None:
         store = _store(request)
         templates = request.app.state.templates
 
-        servers = store.list_servers()
+        servers = _decorate_servers_for_ui(store.list_servers(), _config(request))
         buckets = _build_ui_buckets(store)
 
         return templates.TemplateResponse(
@@ -768,6 +811,7 @@ def _register_routes(app: FastAPI) -> None:
             {
                 "servers": servers,
                 "buckets": buckets,
+                "config_panel": _build_config_panel(_config(request)),
                 "version": request.app.state.version,
                 "page": "dashboard",
             },
@@ -969,7 +1013,7 @@ def _register_routes(app: FastAPI) -> None:
                 request,
                 "partials/servers.html",
                 {
-                    "servers": store.list_servers(),
+                    "servers": _decorate_servers_for_ui(store.list_servers(), _config(request)),
                     "version": request.app.state.version,
                 },
             )
@@ -1124,6 +1168,24 @@ class _Buckets:
     weak: list
     completed: list
     failed: list
+    cluster_running: int
+    cluster_pending: int
+    cluster_running_jobs: list[dict]
+    cluster_pending_jobs: list[dict]
+
+
+def _cluster_slurm_jobs(servers, states: set[str]) -> list[dict]:
+    jobs: list[dict] = []
+    for srv in servers:
+        for job in (srv.slurm_queue or {}).get("jobs", []) or []:
+            state = str(job.get("state", "")).upper()
+            if state not in states:
+                continue
+            item = dict(job)
+            item["server"] = srv.name
+            item["state"] = state
+            jobs.append(item)
+    return jobs
 
 
 def _build_ui_buckets(store) -> "_Buckets":
@@ -1134,6 +1196,7 @@ def _build_ui_buckets(store) -> "_Buckets":
     so the bucket classification can never drift out of sync between them.
     """
     all_runs = store.list_runs()
+    servers = store.list_servers()
     jf_cache: dict[str, str] = {}
     for run in all_runs:
         if run.jobfile_id not in jf_cache:
@@ -1155,6 +1218,10 @@ def _build_ui_buckets(store) -> "_Buckets":
     b.weak      = [r for r in all_runs if r.expectation_match == "weak_signal"]
     b.completed = [r for r in all_runs if r.state.value == "completed" and r.expectation_match != "weak_signal"]
     b.failed    = [r for r in all_runs if r.state.value in ("failed", "cancelled", "timeout")]
+    b.cluster_running = sum(int((srv.slurm_queue or {}).get("running", 0) or 0) for srv in servers)
+    b.cluster_pending = sum(int((srv.slurm_queue or {}).get("pending", 0) or 0) for srv in servers)
+    b.cluster_running_jobs = _cluster_slurm_jobs(servers, {"R"})
+    b.cluster_pending_jobs = _cluster_slurm_jobs(servers, {"PD"})
     return b
 
 
@@ -1185,6 +1252,123 @@ def _server_to_dict(s) -> dict:
         "slurm_queue": s.slurm_queue,
         "note": s.note,
     }
+
+
+def _policy_for_server(config: dict, server_name: str) -> dict | None:
+    policies = config.get("default_policies") or {}
+    policy = policies.get(server_name)
+    if policy is None:
+        servers = config.get("servers") or {}
+        policy = (servers.get(server_name) or {}).get("default_policy")
+    return dict(policy) if isinstance(policy, dict) else None
+
+
+def _policy_snapshot(server, config: dict) -> dict | None:
+    policy = _policy_for_server(config, server.name)
+    if not policy:
+        return None
+
+    target_idle_pct = float(policy.get("target_idle_pct", policy.get("idle_pct", 5.0)))
+    kernel_cpus = max(1, int(policy.get("kernel_cpus", policy.get("cpus_per_kernel", 1))))
+    max_active = policy.get("max_active")
+    queue = server.slurm_queue or {}
+    total_cpus = int(queue.get("total_cpus") or 0)
+    idle_cpus = int(queue.get("idle_cpus") or 0)
+
+    if total_cpus > 0:
+        target_idle_cpus = max(1, math.ceil(total_cpus * target_idle_pct / 100.0))
+        free_cpus = max(0, idle_cpus - target_idle_cpus)
+        kernels_available = free_cpus // kernel_cpus
+        idle_pct = round(idle_cpus / total_cpus * 100.0, 1)
+    else:
+        target_idle_cpus = None
+        free_cpus = None
+        kernels_available = None
+        idle_pct = None
+
+    return {
+        "mode": policy.get("mode", "cpu_fill_idle"),
+        "enabled": bool(policy.get("enabled", True)),
+        "target_idle_pct": target_idle_pct,
+        "kernel_cpus": kernel_cpus,
+        "max_active": max_active,
+        "total_cpus": total_cpus or None,
+        "idle_cpus": idle_cpus or None,
+        "idle_pct": idle_pct,
+        "target_idle_cpus": target_idle_cpus,
+        "free_cpus_after_reserve": free_cpus,
+        "kernels_available": kernels_available,
+    }
+
+
+def _decorate_servers_for_ui(servers, config: dict) -> list:
+    for srv in servers:
+        srv.__dict__["policy"] = _policy_snapshot(srv, config)
+    return servers
+
+
+def _build_config_panel(config: dict) -> "_DictObj":
+    policies = []
+    for server, policy in sorted((config.get("default_policies") or {}).items()):
+        if not isinstance(policy, dict):
+            continue
+        policies.append(_DictObj({
+            "server": server,
+            "mode": policy.get("mode", "cpu_fill_idle"),
+            "target_idle_pct": policy.get("target_idle_pct", policy.get("idle_pct", 5)),
+            "kernel_cpus": policy.get("kernel_cpus", policy.get("cpus_per_kernel", 1)),
+            "max_active": policy.get("max_active"),
+            "enabled": policy.get("enabled", True),
+        }))
+
+    server_entries = []
+    for name, srv in sorted((config.get("servers") or {}).items()):
+        srv = srv or {}
+        server_entries.append(_DictObj({
+            "name": name,
+            "backend": srv.get("backend", "ssh"),
+            "host": srv.get("host", name),
+            "partition": srv.get("partition"),
+            "account": srv.get("account"),
+            "time": srv.get("time"),
+            "mem": srv.get("mem"),
+            "cpus_per_task": srv.get("cpus_per_task"),
+        }))
+
+    task_entries = []
+    for name, task in sorted((config.get("tasks") or {}).items()):
+        task = task or {}
+        task_entries.append(_DictObj({
+            "name": name,
+            "partition": task.get("partition"),
+            "account": task.get("account"),
+            "cpus_per_task": task.get("cpus_per_task") or task.get("cpus"),
+            "mem": task.get("mem"),
+            "time": task.get("time"),
+        }))
+
+    analyzer = "offline"
+    if config.get("deepseek_api_key") or os.environ.get("DEEPSEEK_API_KEY"):
+        analyzer = "deepseek"
+    elif config.get("gemini_api_key") or os.environ.get("GEMINI_API_KEY"):
+        analyzer = "gemini"
+
+    return _DictObj({
+        "state_root": config.get("state_root"),
+        "db_path": config.get("db_path"),
+        "run_dir": config.get("run_dir"),
+        "jobctl_config_path": config.get("jobctl_config_path"),
+        "cluster_yaml_path": config.get("cluster_yaml_path"),
+        "daemon_host": config.get("daemon_host", "127.0.0.1"),
+        "daemon_port": config.get("daemon_port", 7421),
+        "analyzer": analyzer,
+        "notify_macos_enabled": config.get("notify_macos_enabled", True),
+        "notify_sound": config.get("notify_sound") or "silent",
+        "notify_window_seconds": config.get("notify_window_seconds", 15.0),
+        "policies": policies,
+        "servers": server_entries,
+        "tasks": task_entries,
+    })
 
 
 def _feedback_to_dict(fb) -> dict:

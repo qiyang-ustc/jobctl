@@ -2,7 +2,7 @@
 
 Loads:
 - ~/.cluster.yaml (or a given path): servers, tasks, remote_path
-- ~/.jobctl/config.toml (or a given path): jobctl daemon settings
+- $JOBCTL_HOME/config.toml or ~/.jobctl/config.toml: jobctl daemon settings
 """
 from __future__ import annotations
 
@@ -24,10 +24,14 @@ class Config:
     remote_path: str = ""
 
     # jobctl daemon settings
+    cluster_yaml_path: str = ""
+    jobctl_config_path: str = ""
+    state_root: str = ""
     db_path: str = ""
     run_dir: str = ""
     daemon_port: int = 7421
     daemon_host: str = "127.0.0.1"
+    default_policies: dict[str, dict] = field(default_factory=dict)
 
     # Optional analysis
     deepseek_api_key: str = ""
@@ -40,9 +44,32 @@ class Config:
 
 
 _DEFAULT_CLUSTER_YAML = os.path.expanduser("~/.cluster.yaml")
-_DEFAULT_JOBCTL_CONFIG = os.path.expanduser("~/.jobctl/config.toml")
-_DEFAULT_RUN_DIR = os.path.expanduser("~/.jobctl/runs")
-_DEFAULT_DB_PATH = os.path.expanduser("~/.jobctl/jobctl.db")
+
+
+def _expand_path(path: str) -> str:
+    return os.path.abspath(os.path.expanduser(os.path.expandvars(path)))
+
+
+def default_state_root() -> str:
+    """Return the configured jobctl state root.
+
+    ``JOBCTL_HOME`` is the single environment override used by logs, DB, run
+    mirrors, and generated config paths. Keeping this centralized prevents
+    subagents/sandboxed sessions from accidentally writing to ``~/.jobctl``.
+    """
+    return _expand_path(os.environ.get("JOBCTL_HOME", "~/.jobctl"))
+
+
+def default_jobctl_config_path(state_root: str | None = None) -> str:
+    return str(Path(state_root or default_state_root()) / "config.toml")
+
+
+def default_run_dir(state_root: str | None = None) -> str:
+    return str(Path(state_root or default_state_root()) / "runs")
+
+
+def default_db_path(state_root: str | None = None) -> str:
+    return str(Path(state_root or default_state_root()) / "jobctl.db")
 
 
 def load_config(
@@ -59,12 +86,16 @@ def load_config(
         Populated Config dataclass with sane defaults when files are absent.
     """
     cluster_yaml_path = cluster_yaml_path or _DEFAULT_CLUSTER_YAML
-    jobctl_config_path = jobctl_config_path or _DEFAULT_JOBCTL_CONFIG
+    state_root = default_state_root()
+    jobctl_config_path = jobctl_config_path or os.environ.get("JOBCTL_CONFIG") or default_jobctl_config_path(state_root)
 
     # Start with defaults
     cfg = Config(
-        db_path=_DEFAULT_DB_PATH,
-        run_dir=_DEFAULT_RUN_DIR,
+        cluster_yaml_path=_expand_path(cluster_yaml_path),
+        jobctl_config_path=_expand_path(jobctl_config_path),
+        state_root=state_root,
+        db_path=default_db_path(state_root),
+        run_dir=default_run_dir(state_root),
         remote_path=os.path.expanduser("~/jobctl-remote"),
     )
 
@@ -93,14 +124,20 @@ def load_config(
             with open(config_path, "rb") as f:
                 toml_data = tomllib.load(f)
             jc = toml_data.get("jobctl", {})
+            if "state_root" in jc:
+                cfg.state_root = _expand_path(str(jc["state_root"]))
+                cfg.db_path = default_db_path(cfg.state_root)
+                cfg.run_dir = default_run_dir(cfg.state_root)
             if "db_path" in jc:
-                cfg.db_path = jc["db_path"]
+                cfg.db_path = _expand_path(str(jc["db_path"]))
             if "run_dir" in jc:
-                cfg.run_dir = jc["run_dir"]
+                cfg.run_dir = _expand_path(str(jc["run_dir"]))
             if "daemon_port" in jc:
                 cfg.daemon_port = int(jc["daemon_port"])
             if "daemon_host" in jc:
                 cfg.daemon_host = jc["daemon_host"]
+            if "default_policies" in jc and isinstance(jc["default_policies"], dict):
+                cfg.default_policies = jc["default_policies"]
             if "notify_macos_enabled" in jc:
                 cfg.notify_macos_enabled = bool(jc["notify_macos_enabled"])
             if "notify_sound" in jc:

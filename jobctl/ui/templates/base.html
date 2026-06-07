@@ -5,10 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>{% block title %}jobctl{% endblock %}</title>
   <script>
-    /* Set theme before paint (no flash). Default: stored pref, else system. */
+    /* Set theme before paint (no flash). Default: stored pref, else light. */
     (function(){
-      var t = localStorage.getItem('jobctl_theme') ||
-              (window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+      var t = localStorage.getItem('jobctl_theme') || 'light';
       document.documentElement.setAttribute('data-theme', t);
       window.__toggleTheme = function(){
         var cur = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
@@ -45,7 +44,7 @@
       }
     });
   </script>
-  <link rel="stylesheet" href="/static/app.css?v=6"/>
+  <link rel="stylesheet" href="/static/app.css?v=7"/>
   <script src="/static/htmx.min.js" defer></script>
   <script src="/static/i18n.js" defer></script>
 </head>

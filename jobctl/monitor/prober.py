@@ -31,6 +31,8 @@ _REMOTE = "; ".join([
     "echo SQP:$(squeue -h -u $USER -t PD 2>/dev/null | wc -l)",
     "echo SQRA:$(squeue -h -t R 2>/dev/null | wc -l)",
     "echo SQPA:$(squeue -h -t PD 2>/dev/null | wc -l)",
+    "echo SINFOC:$(sinfo -h -o %C 2>/dev/null | head -1)",
+    "squeue -h -u $USER -t R,PD -o %i^%t^%j^%M^%L^%D^%C^%R 2>/dev/null | head -80 | sed s/^/SQJ:/",
 ])
 
 
@@ -47,6 +49,47 @@ def _num(s: str, default: float = 0.0) -> float:
         return float(s)
     except (TypeError, ValueError):
         return default
+
+
+def _parse_slurm_jobs(lines: list[str]) -> list[dict]:
+    jobs: list[dict] = []
+    for line in lines:
+        parts = line.split("^", 7)
+        if len(parts) < 3:
+            continue
+        job = {
+            "job_id": parts[0],
+            "state": parts[1],
+            "name": parts[2],
+        }
+        if len(parts) > 3:
+            job["elapsed"] = parts[3]
+        if len(parts) > 4:
+            job["time_left"] = parts[4]
+        if len(parts) > 5:
+            job["nodes"] = int(_num(parts[5])) if parts[5] else 0
+        if len(parts) > 6:
+            job["cpus"] = int(_num(parts[6])) if parts[6] else 0
+        if len(parts) > 7:
+            job["where"] = parts[7]
+        jobs.append(job)
+    return jobs
+
+
+def _parse_sinfo_cpus(raw: str) -> dict:
+    """Parse ``sinfo -o %C``: allocated/idle/other/total."""
+    parts = (raw or "").strip().split("/")
+    if len(parts) != 4:
+        return {}
+    alloc, idle, other, total = [int(_num(p)) for p in parts]
+    idle_pct = round(idle / total * 100.0, 1) if total else 0.0
+    return {
+        "allocated_cpus": alloc,
+        "idle_cpus": idle,
+        "other_cpus": other,
+        "total_cpus": total,
+        "idle_pct": idle_pct,
+    }
 
 
 class SshProber:
@@ -73,7 +116,11 @@ class SshProber:
 
     def _parse(self, name: str, cfg: dict, out: str) -> Server:
         kv: dict[str, str] = {}
+        slurm_job_lines: list[str] = []
         for line in out.splitlines():
+            if line.startswith("SQJ:"):
+                slurm_job_lines.append(line[4:].strip())
+                continue
             if ":" in line:
                 k, _, v = line.partition(":")
                 kv[k.strip()] = v.strip()
@@ -110,6 +157,10 @@ class SshProber:
                 "running_all": int(_num(kv.get("SQRA"))),
                 "pending_all": int(_num(kv.get("SQPA"))),
             }
+            slurm_queue.update(_parse_sinfo_cpus(kv.get("SINFOC", "")))
+            jobs = _parse_slurm_jobs(slurm_job_lines)
+            if jobs:
+                slurm_queue["jobs"] = jobs
 
         return Server(
             name=name,

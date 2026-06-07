@@ -149,11 +149,13 @@ def get_backend(backend: str, server: str | None, config: dict) -> Backend:
     """
     if backend == "local":
         from jobctl.backends.local import LocalBackend
-        return LocalBackend()
+        return LocalBackend(workdir_root=config.get("run_dir"))
 
     if backend in ("ssh", "slurm"):
         servers_cfg: dict = config.get("servers", {})
-        server_config: dict = servers_cfg.get(server, {}) if server else {}
+        server_config: dict = dict(servers_cfg.get(server, {}) if server else {})
+        if config.get("run_dir"):
+            server_config.setdefault("run_dir", config["run_dir"])
 
     if backend == "ssh":
         from jobctl.backends.ssh import SshBackend

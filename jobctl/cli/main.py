@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
@@ -544,16 +545,16 @@ def gc(
     dry_run: Annotated[bool, typer.Option("--dry-run", help="List orphans without deleting")] = False,
     json_out: Annotated[bool, typer.Option("--json", help="Output JSON")] = False,
 ):
-    """Remove orphan run directories in ~/.jobctl/runs that have no DB record.
+    """Remove orphan run directories in the configured run_dir that have no DB record.
 
     A directory is only removed when its name isn't a known run_id, so runs the
     daemon still tracks are never touched."""
     from jobctl import gc as _gc
-    from jobctl.logsetup import log_dir
+    from jobctl.config import load_config
 
     client = _get_client()
     known = {r["run_id"] for r in client.list_runs()}
-    runs_dir = log_dir() / "runs"
+    runs_dir = Path(load_config().run_dir)
     orphans, removed = _gc.gc_runs(str(runs_dir), known, dry_run=dry_run)
 
     result = {
@@ -764,23 +765,33 @@ def serve(
     from jobctl.logsetup import configure_logging
 
     log_file = configure_logging("daemon")
-    import logging as _logging
-    _logging.getLogger("jobctl").info("daemon starting on %s:%s (log: %s)", host, port, log_file)
 
     # Load cluster.yaml so server configs (remote_path, account, partition, etc.)
     # are available to backends at runtime.
     _cfg = _load_config()
+    if host == "127.0.0.1" and _cfg.daemon_host:
+        host = _cfg.daemon_host
+    if port == 7421 and _cfg.daemon_port:
+        port = _cfg.daemon_port
     config: dict = {"servers": _cfg.servers}
+    config["cluster_yaml_path"] = _cfg.cluster_yaml_path
+    config["jobctl_config_path"] = _cfg.jobctl_config_path
+    config["state_root"] = _cfg.state_root
     if _cfg.db_path:
         config["db_path"] = _cfg.db_path
     if _cfg.run_dir:
         config["run_dir"] = _cfg.run_dir
+    if _cfg.default_policies:
+        config["default_policies"] = _cfg.default_policies
     if db_path:
         config["db_path"] = db_path
     # Desktop-notification settings reach the Monitor via this dict.
     config["notify_macos_enabled"] = _cfg.notify_macos_enabled
     config["notify_sound"] = _cfg.notify_sound
     config["notify_window_seconds"] = _cfg.notify_window_seconds
+
+    import logging as _logging
+    _logging.getLogger("jobctl").info("daemon starting on %s:%s (log: %s)", host, port, log_file)
 
     application = create_app(config=config, start_monitor=True)
     uvicorn.run(application, host=host, port=port, reload=reload)

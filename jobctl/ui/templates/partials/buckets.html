@@ -2,26 +2,57 @@
 {% import "partials/_macros.html" as ui %}
 
 {% set bucket_defs = [
-    ("running",   "Running",     "bucket.running",   "empty.running",   buckets.running),
-    ("queued",    "Queued",      "bucket.queued",    "empty.queued",    buckets.queued),
-    ("stuck",     "Stuck",       "bucket.stuck",     "empty.stuck",     buckets.stuck),
-    ("weak",      "Weak Signal", "bucket.weak",      "empty.weak",      buckets.weak),
-    ("completed", "Completed",   "bucket.completed", "empty.completed", buckets.completed),
-    ("failed",    "Failed",      "bucket.failed",    "empty.failed",    buckets.failed),
+    ("running",   "Running",     "bucket.running",   "empty.running",   buckets.running,   buckets.cluster_running_jobs, buckets.cluster_running),
+    ("queued",    "Queued",      "bucket.queued",    "empty.queued",    buckets.queued,    buckets.cluster_pending_jobs, buckets.cluster_pending),
+    ("stuck",     "Stuck",       "bucket.stuck",     "empty.stuck",     buckets.stuck,     [], 0),
+    ("weak",      "Weak Signal", "bucket.weak",      "empty.weak",      buckets.weak,      [], 0),
+    ("completed", "Completed",   "bucket.completed", "empty.completed", buckets.completed, [], 0),
+    ("failed",    "Failed",      "bucket.failed",    "empty.failed",    buckets.failed,    [], 0),
 ] %}
 
 <div class="buckets-stack">
-{% for key, label, i18n_label, i18n_empty, runs in bucket_defs %}
-<div class="bucket-section">
+{% for key, label, i18n_label, i18n_empty, runs, cluster_jobs, cluster_count in bucket_defs %}
+<div class="bucket-section bucket-{{ key }}">
   <div class="bucket-header">
-    <span class="bucket-label" data-i18n="{{ i18n_label }}">{{ label }}</span>
-    <span class="bucket-count">{{ runs | length }}</span>
+    <div>
+      <span class="bucket-label" data-i18n="{{ i18n_label }}">{{ label }}</span>
+      {% if cluster_count %}
+      <span class="bucket-sub">managed {{ runs | length }} · scheduler {{ cluster_count }}</span>
+      {% endif %}
+    </div>
+    <span class="bucket-count">{{ (runs | length) + cluster_count }}</span>
   </div>
   <div class="bucket-body">
-    {% if runs %}
+    {% if runs or cluster_jobs or cluster_count %}
+    {% if not runs and cluster_count %}
+    <div class="empty-bucket empty-bucket-split cluster-jobs-banner">
+      <span>No jobctl-managed {{ label | lower }} runs.</span>
+      <span class="empty-bucket-note">{{ cluster_count }} {{ "running" if key == "running" else "pending" }} job(s) are visible via server status.</span>
+    </div>
+    {% endif %}
     {% for run in runs %}
     {{ ui.run_row(run) }}
     {% endfor %}
+    {% for job in cluster_jobs %}
+    <div class="run-row cluster-job-row">
+      <span class="run-status-dot dot-{{ "running" if key == "running" else "pending" }}"></span>
+      <span class="cluster-job-id tabnum">{{ job.job_id }}</span>
+      <span class="run-title" title="{{ job.name }}">{{ job.name }}</span>
+      <span class="badge badge-neutral">slurm {{ job.state }}</span>
+      <span class="run-server">{{ job.server }}</span>
+      {% if job.cpus %}<span class="run-server tabnum">{{ job.cpus }}c</span>{% endif %}
+      <span class="run-time tabnum">{{ job.elapsed or "-" }} / {{ job.time_left or "-" }}</span>
+    </div>
+    {% endfor %}
+    {% if cluster_jobs and cluster_count > (cluster_jobs | length) %}
+    <div class="cluster-jobs-more">
+      Showing {{ cluster_jobs | length }} of {{ cluster_count }} server-status jobs.
+    </div>
+    {% elif cluster_count and not cluster_jobs %}
+    <div class="cluster-jobs-more">
+      Server status has {{ cluster_count }} {{ "running" if key == "running" else "pending" }} job(s); detailed rows will appear after the next probe.
+    </div>
+    {% endif %}
     {% else %}
     <div class="empty-bucket" data-i18n="{{ i18n_empty }}">No {{ label | lower }} runs.</div>
     {% endif %}

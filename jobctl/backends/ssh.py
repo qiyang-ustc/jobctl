@@ -55,6 +55,9 @@ class SshBackend(Backend):
         self._host = server_config.get("host", server)
         self._user = server_config.get("user")
         self._remote_path_template = server_config.get("remote_path", f"/tmp/jobctl/{server}")
+        self._local_run_dir = server_config.get("run_dir") or str(
+            Path(os.environ.get("JOBCTL_HOME", str(Path.home() / ".jobctl"))) / "runs"
+        )
         self._run_cmd = run_cmd or _default_run_cmd
 
     def _remote_path(self, jobfile_name: str = "runs") -> str:
@@ -126,7 +129,7 @@ class SshBackend(Backend):
         remote_workdir = run.workdir or f"{self._remote_path()}/{run.run_id}"
 
         # Local mirror directory
-        local_mirror = str(Path.home() / ".jobctl" / "runs" / run.run_id)
+        local_mirror = str(Path(self._local_run_dir) / run.run_id)
         Path(local_mirror).mkdir(parents=True, exist_ok=True)
 
         # rsync pull: remote -> local

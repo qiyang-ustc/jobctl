@@ -50,7 +50,17 @@ def seeded_app(tmp_path):
     run_dir = str(tmp_path / "runs")
 
     app = create_app(
-        config={"db_path": db_path, "run_dir": run_dir},
+        config={
+            "db_path": db_path,
+            "run_dir": run_dir,
+            "default_policies": {
+                "gpu-server-1": {
+                    "mode": "cpu_fill_idle",
+                    "target_idle_pct": 5,
+                    "kernel_cpus": 4,
+                }
+            },
+        },
         start_monitor=False,
     )
     store: Store = app.state.store
@@ -83,8 +93,34 @@ def seeded_app(tmp_path):
         mem={"pct": 65.0},
         gpu={"pct": 80.0},
         disk={"pct": 30.0},
-        slurm_queue={"running": 3, "pending": 1},
-        note=None,
+        slurm_queue={
+            "running": 3,
+            "pending": 1,
+            "allocated_cpus": 760,
+            "idle_cpus": 40,
+            "other_cpus": 0,
+            "total_cpus": 800,
+            "idle_pct": 5.0,
+            "jobs": [
+                {
+                    "job_id": "12345",
+                    "state": "R",
+                    "name": "alpha_scan",
+                    "elapsed": "01:02",
+                    "time_left": "03:58",
+                    "cpus": 8,
+                },
+                {
+                    "job_id": "12346",
+                    "state": "PD",
+                    "name": "beta_scan",
+                    "elapsed": "00:00",
+                    "time_left": "04:00",
+                    "cpus": 4,
+                },
+            ],
+        },
+        note="Long cluster note that should be collapsed by default because it contains operational guidance, login-node warnings, partition details, and other text that would otherwise dominate the server card.",
     )
     store.upsert_server(server)
 
@@ -386,6 +422,52 @@ class TestDashboard:
         body = resp.text
         # "queued" or pending/submitted states
         assert "queued" in body.lower() or "pending" in body.lower() or "submitted" in body.lower()
+
+    def test_dashboard_collapses_long_server_note(self, seeded_app):
+        client, ids = seeded_app
+        resp = client.get("/")
+        body = resp.text
+        assert 'class="server-note"' in body
+        assert "<summary>server note</summary>" in body
+
+    def test_dashboard_shows_server_slurm_job_details(self, seeded_app):
+        client, ids = seeded_app
+        resp = client.get("/")
+        body = resp.text
+        assert "my jobs" in body
+        assert "alpha_scan" in body
+        assert "12345" in body
+
+    def test_dashboard_shows_default_policy_capacity(self, seeded_app):
+        client, ids = seeded_app
+        resp = client.get("/")
+        body = resp.text
+        assert "cpu_fill_idle" in body
+        assert "keep 5% idle" in body
+        assert "kernel slot" in body
+
+    def test_dashboard_shows_configuration_panel(self, seeded_app):
+        client, ids = seeded_app
+        resp = client.get("/")
+        body = resp.text
+        assert "Configuration" in body
+        assert "state root" in body
+        assert "database" in body
+        assert "run dir" in body
+        assert "Default Policies" in body
+        assert "[jobctl]" in body
+
+    def test_dashboard_explains_cluster_activity_when_run_bucket_empty(self, seeded_app):
+        from jobctl.db.models import State
+
+        client, ids = seeded_app
+        client.app.state.store.update_run(ids["running_id"], state=State.COMPLETED)
+        resp = client.get("/ui/poll")
+        body = resp.text
+        assert "No jobctl-managed running runs." in body
+        assert "visible via server status" in body
+        assert "alpha_scan" in body
+        assert "slurm R" in body
 
 
 # Header that triggers HTML rendering via content negotiation

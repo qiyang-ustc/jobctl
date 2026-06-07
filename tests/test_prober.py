@@ -23,6 +23,9 @@ REACHABLE_SLURM = "\n".join([
     "SQP:5",
     "SQRA:120",
     "SQPA:340",
+    "SINFOC:760/40/0/800",
+    "SQJ:12345^R^alpha_scan^01:02^03:58^1^8^node-a",
+    "SQJ:12346^PD^beta_scan^00:00^04:00^1^4^(Priority)",
 ])
 
 
@@ -37,6 +40,30 @@ def test_probe_parses_reachable_slurm_server():
     assert srv.backend_type == "slurm"
     assert srv.slurm_queue == {
         "running": 3, "pending": 5, "running_all": 120, "pending_all": 340,
+        "allocated_cpus": 760, "idle_cpus": 40, "other_cpus": 0,
+        "total_cpus": 800, "idle_pct": 5.0,
+        "jobs": [
+            {
+                "job_id": "12345",
+                "state": "R",
+                "name": "alpha_scan",
+                "elapsed": "01:02",
+                "time_left": "03:58",
+                "nodes": 1,
+                "cpus": 8,
+                "where": "node-a",
+            },
+            {
+                "job_id": "12346",
+                "state": "PD",
+                "name": "beta_scan",
+                "elapsed": "00:00",
+                "time_left": "04:00",
+                "nodes": 1,
+                "cpus": 4,
+                "where": "(Priority)",
+            },
+        ],
     }
 
 

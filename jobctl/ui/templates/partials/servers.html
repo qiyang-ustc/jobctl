@@ -4,28 +4,50 @@
 <div class="server-card {{ 'online' if srv.online else 'offline' }}">
   <div class="server-header">
     <span class="server-status-dot {{ 'online' if srv.online else 'offline' }}"></span>
-    <span class="server-name">{{ srv.name }}</span>
-    <span class="badge {{ 'badge-online' if srv.online else 'badge-offline' }}">
-      {{ 'online' if srv.online else 'offline' }}
-    </span>
-    <span class="badge badge-neutral">{{ srv.backend_type }}</span>
+    <div class="server-title">
+      <span class="server-name">{{ srv.name }}</span>
+      {% if srv.last_heartbeat %}<span class="server-meta">{{ srv.last_heartbeat[:19] }}</span>{% endif %}
+    </div>
+    <div class="server-pills">
+      <span class="badge {{ 'badge-online' if srv.online else 'badge-offline' }}">
+        {{ 'online' if srv.online else 'offline' }}
+      </span>
+      <span class="badge badge-neutral">{{ srv.backend_type }}</span>
+    </div>
   </div>
-  {% if srv.last_heartbeat %}
-  <div class="server-meta">{{ srv.last_heartbeat[:19] }}</div>
-  {% endif %}
   {% if srv.note %}
+  {% if (srv.note | length) > 80 %}
+  <details class="server-note">
+    <summary>server note</summary>
+    <div class="server-note-body">{{ srv.note }}</div>
+  </details>
+  {% else %}
   <div class="server-meta">{{ srv.note }}</div>
+  {% endif %}
   {% endif %}
   {% if srv.online %}
   {% if srv.backend_type == 'slurm' or srv.slurm_queue %}
   {# SLURM host: the QUEUE is what matters. The login-node cpu/mem are not where
      work runs, so they're intentionally omitted. #}
   <div class="server-queue">
-    <div class="queue-row queue-mine">
-      <span class="queue-tag" data-i18n="queue.yours">yours</span>
-      <span class="queue-stat"><b>{{ srv.slurm_queue.get('running', 0) }}</b> <span data-i18n="queue.running">running</span></span>
-      <span class="queue-dot">·</span>
-      <span class="queue-stat"><b>{{ srv.slurm_queue.get('pending', 0) }}</b> <span data-i18n="queue.pending">pending</span></span>
+    <div class="queue-board">
+      <div class="queue-cell queue-mine">
+        <span class="queue-tag" data-i18n="queue.yours">yours</span>
+        <strong class="tabnum">{{ srv.slurm_queue.get('running', 0) }}</strong>
+        <span data-i18n="queue.running">running</span>
+      </div>
+      <div class="queue-cell">
+        <span class="queue-tag" data-i18n="queue.pending">pending</span>
+        <strong class="tabnum">{{ srv.slurm_queue.get('pending', 0) }}</strong>
+        <span data-i18n="queue.waiting">waiting</span>
+      </div>
+      {% if srv.slurm_queue.get('total_cpus') %}
+      <div class="queue-cell">
+        <span class="queue-tag" data-i18n="queue.idle.cpu">idle cpu</span>
+        <strong class="tabnum">{{ srv.slurm_queue.get('idle_cpus', 0) }}</strong>
+        <span>{{ srv.slurm_queue.get('idle_pct', 0) }}%</span>
+      </div>
+      {% endif %}
     </div>
     {% if 'running_all' in srv.slurm_queue or 'pending_all' in srv.slurm_queue %}
     <div class="queue-row queue-all">
@@ -34,6 +56,39 @@
       <span class="queue-dot">·</span>
       <span class="queue-stat">{{ srv.slurm_queue.get('pending_all', 0) }} <span data-i18n="queue.pending">pending</span></span>
     </div>
+    {% endif %}
+    {% if srv.policy %}
+    <div class="policy-line {{ 'disabled' if not srv.policy.enabled else '' }}">
+      <span class="policy-label" data-i18n="policy.label">policy</span>
+      <span>{{ srv.policy.mode }}</span>
+      <span class="policy-target">keep {{ srv.policy.target_idle_pct | int }}% idle</span>
+      {% if srv.policy.kernels_available is not none %}
+      <strong class="tabnum">{{ srv.policy.kernels_available }}</strong>
+      <span data-i18n="policy.kernel.slots">kernel slot(s)</span>
+      {% else %}
+      <span class="text-muted" data-i18n="policy.capacity.unknown">capacity unknown</span>
+      {% endif %}
+    </div>
+    {% endif %}
+    {% set jobs = srv.slurm_queue.get('jobs', []) %}
+    {% if jobs %}
+    <details class="server-jobs" {% if jobs | length <= 3 %}open{% endif %}>
+      <summary>
+        <span>my jobs</span>
+        <span>{{ jobs | length }} listed</span>
+      </summary>
+      <div class="server-jobs-table">
+        {% for job in jobs %}
+        <div class="server-job-row">
+          <span class="server-job-state state-{{ job.state | lower }}">{{ job.state }}</span>
+          <span class="server-job-name" title="{{ job.name }}">{{ job.name }}</span>
+          <span class="server-job-id tabnum">{{ job.job_id }}</span>
+          <span class="server-job-time tabnum">{{ job.elapsed or '-' }} / {{ job.time_left or '-' }}</span>
+          <span class="server-job-cpus tabnum">{{ job.cpus or 0 }}c</span>
+        </div>
+        {% endfor %}
+      </div>
+    </details>
     {% endif %}
   </div>
   {% else %}
