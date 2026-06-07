@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -39,11 +40,11 @@ def configure_logging(component: str, level: int = logging.INFO) -> Path:
     handler = RotatingFileHandler(
         path, maxBytes=5_000_000, backupCount=3, encoding="utf-8"
     )
-    handler.setFormatter(
-        logging.Formatter(
-            f"%(asctime)s %(levelname)s [{component}:%(process)d] %(name)s: %(message)s"
-        )
+    fmt = logging.Formatter(
+        f"%(asctime)sZ %(levelname)s [{component}:%(process)d] %(name)s: %(message)s"
     )
+    fmt.converter = time.gmtime  # UTC, to match jobctl's UTC heartbeats/timestamps
+    handler.setFormatter(fmt)
     root = logging.getLogger()
     if root.level == logging.WARNING or root.level == 0:  # default/unset
         root.setLevel(level)
