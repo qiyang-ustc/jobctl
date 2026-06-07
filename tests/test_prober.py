@@ -21,6 +21,8 @@ REACHABLE_SLURM = "\n".join([
     "HASSLURM:1",
     "SQR:3",
     "SQP:5",
+    "SQRA:120",
+    "SQPA:340",
 ])
 
 
@@ -33,7 +35,9 @@ def test_probe_parses_reachable_slurm_server():
     assert srv.disk == {"pct": 42}
     assert srv.gpu == {"pct": 37.0}
     assert srv.backend_type == "slurm"
-    assert srv.slurm_queue == {"running": 3, "pending": 5}
+    assert srv.slurm_queue == {
+        "running": 3, "pending": 5, "running_all": 120, "pending_all": 340,
+    }
 
 
 def test_probe_non_slurm_host_has_no_queue():

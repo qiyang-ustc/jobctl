@@ -171,6 +171,17 @@ footer{ width:100%; max-width:var(--maxw); margin:0 auto; padding:16px 32px 28px
 .resource-bar-fill.med{ background:var(--st-warn); }
 .resource-bar-fill.high{ background:var(--st-bad); }
 
+/* ---- SLURM queue (the hero metric for slurm hosts) ------------------------ */
+.server-queue{ margin-top:12px; display:flex; flex-direction:column; gap:6px; }
+.queue-row{ display:flex; align-items:baseline; gap:8px; font-family:var(--font-mono); font-size:.78rem; color:var(--text-2); }
+.queue-tag{ font-size:.6rem; text-transform:uppercase; letter-spacing:.6px; color:var(--text-3);
+  min-width:48px; }
+.queue-row.queue-mine{ font-size:.92rem; color:var(--text); }
+.queue-row.queue-mine .queue-tag{ color:var(--accent); }
+.queue-stat b{ font-weight:700; font-variant-numeric:tabular-nums; }
+.queue-row.queue-all{ color:var(--text-3); }
+.queue-dot{ color:var(--text-4); }
+
 /* ---- Run buckets → grouped tables ----------------------------------------- */
 .buckets-stack{ display:flex; flex-direction:column; gap:18px; }
 .bucket-header{ display:flex; align-items:center; gap:10px; margin-bottom:8px; }

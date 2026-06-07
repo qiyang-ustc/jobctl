@@ -29,6 +29,8 @@ _REMOTE = "; ".join([
     "echo HASSLURM:$(command -v squeue >/dev/null 2>&1 && echo 1 || echo 0)",
     "echo SQR:$(squeue -h -u $USER -t R 2>/dev/null | wc -l)",
     "echo SQP:$(squeue -h -u $USER -t PD 2>/dev/null | wc -l)",
+    "echo SQRA:$(squeue -h -t R 2>/dev/null | wc -l)",
+    "echo SQPA:$(squeue -h -t PD 2>/dev/null | wc -l)",
 ])
 
 
@@ -99,7 +101,15 @@ class SshProber:
         backend_type = cfg.get("backend", "ssh")
         if kv.get("HASSLURM") == "1":
             backend_type = "slurm"
-            slurm_queue = {"running": int(_num(kv.get("SQR"))), "pending": int(_num(kv.get("SQP")))}
+            # "running"/"pending" are YOUR jobs; "*_all" are cluster-wide depth.
+            # For a SLURM host the queue is the meaningful signal — the login-node
+            # cpu/mem above are not where work runs.
+            slurm_queue = {
+                "running": int(_num(kv.get("SQR"))),
+                "pending": int(_num(kv.get("SQP"))),
+                "running_all": int(_num(kv.get("SQRA"))),
+                "pending_all": int(_num(kv.get("SQPA"))),
+            }
 
         return Server(
             name=name,

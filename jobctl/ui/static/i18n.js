@@ -12,6 +12,10 @@ const I18N = {
     "section.runs":      "Runs",
     "runs.total":        "total",
     "col.run":           "Run",
+    "queue.yours":       "yours",
+    "queue.cluster":     "cluster",
+    "queue.running":     "running",
+    "queue.pending":     "pending",
 
     /* bucket labels */
     "bucket.running":   "Running",
@@ -114,6 +118,10 @@ const I18N = {
     "section.runs":      "运行列表",
     "runs.total":        "总计",
     "col.run":           "运行",
+    "queue.yours":       "我的",
+    "queue.cluster":     "全集群",
+    "queue.running":     "运行中",
+    "queue.pending":     "排队中",
 
     /* bucket labels */
     "bucket.running":   "运行中",

@@ -17,6 +17,27 @@
   <div class="server-meta">{{ srv.note }}</div>
   {% endif %}
   {% if srv.online %}
+  {% if srv.backend_type == 'slurm' or srv.slurm_queue %}
+  {# SLURM host: the QUEUE is what matters. The login-node cpu/mem are not where
+     work runs, so they're intentionally omitted. #}
+  <div class="server-queue">
+    <div class="queue-row queue-mine">
+      <span class="queue-tag" data-i18n="queue.yours">yours</span>
+      <span class="queue-stat"><b>{{ srv.slurm_queue.get('running', 0) }}</b> <span data-i18n="queue.running">running</span></span>
+      <span class="queue-dot">·</span>
+      <span class="queue-stat"><b>{{ srv.slurm_queue.get('pending', 0) }}</b> <span data-i18n="queue.pending">pending</span></span>
+    </div>
+    {% if 'running_all' in srv.slurm_queue or 'pending_all' in srv.slurm_queue %}
+    <div class="queue-row queue-all">
+      <span class="queue-tag" data-i18n="queue.cluster">cluster</span>
+      <span class="queue-stat">{{ srv.slurm_queue.get('running_all', 0) }} <span data-i18n="queue.running">running</span></span>
+      <span class="queue-dot">·</span>
+      <span class="queue-stat">{{ srv.slurm_queue.get('pending_all', 0) }} <span data-i18n="queue.pending">pending</span></span>
+    </div>
+    {% endif %}
+  </div>
+  {% else %}
+  {# Plain ssh node: cpu/mem/disk are the real execution-host metrics. #}
   <div class="server-resources">
     {% if srv.cpu %}
     <div class="resource-bar-wrap">
@@ -45,13 +66,8 @@
       </div>
     </div>
     {% endif %}
-    {% if srv.slurm_queue %}
-    <div class="server-meta" style="width:100%">
-      Slurm: {{ srv.slurm_queue.get('running', 0) }} running,
-             {{ srv.slurm_queue.get('pending', 0) }} pending
-    </div>
-    {% endif %}
   </div>
+  {% endif %}
   {% endif %}
 </div>
 {% else %}
