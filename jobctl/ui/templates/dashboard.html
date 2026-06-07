@@ -3,30 +3,163 @@
 
 {% block content %}
 
-<div class="page-head">
-  <h1 data-i18n="nav.dashboard">Dashboard</h1>
+{% set managed_active = (buckets.running | length) + (buckets.queued | length) %}
+{% set scheduler_active = buckets.cluster_running + buckets.cluster_pending %}
+{% set attention_count = (buckets.stuck | length) + (buckets.weak | length) + (buckets.failed | length) %}
+
+<div class="dashboard-head">
+  <div>
+    <div class="eyebrow" data-i18n="dash.eyebrow">research run gateway</div>
+    <h1 data-i18n="nav.dashboard">Dashboard</h1>
+  </div>
+  <div class="head-meta mono" data-i18n="dash.live">live · htmx</div>
 </div>
 
-{# ---- Section: Servers ---- #}
-<div class="section-header">
-  <span class="section-title" data-i18n="section.servers">Servers</span>
+<div class="ops-strip" aria-label="run and scheduler summary">
+  <div class="ops-tile ops-primary">
+    <span class="ops-label" data-i18n="dash.managed.active">managed active</span>
+    <strong class="tabnum">{{ managed_active }}</strong>
+    <span class="ops-note">{{ buckets.running | length }} running · {{ buckets.queued | length }} queued</span>
+  </div>
+  <div class="ops-tile">
+    <span class="ops-label" data-i18n="dash.scheduler.visible">scheduler visible</span>
+    <strong class="tabnum">{{ scheduler_active }}</strong>
+    <span class="ops-note">{{ buckets.cluster_running }} R · {{ buckets.cluster_pending }} PD</span>
+  </div>
+  <div class="ops-tile {{ 'ops-alert' if attention_count else '' }}">
+    <span class="ops-label" data-i18n="dash.attention">attention</span>
+    <strong class="tabnum">{{ attention_count }}</strong>
+    <span class="ops-note">{{ buckets.stuck | length }} stuck · {{ buckets.weak | length }} weak · {{ buckets.failed | length }} failed</span>
+  </div>
+  <div class="ops-tile">
+    <span class="ops-label" data-i18n="bucket.completed">completed</span>
+    <strong class="tabnum">{{ buckets.completed | length }}</strong>
+    <span class="ops-note">usable history in this daemon</span>
+  </div>
 </div>
 
-<div class="servers-grid mb-2" id="server-cards"
-     hx-get="/ui/poll?section=servers"
-     hx-trigger="every 15s"
-     hx-swap="innerHTML">
-  {% include "partials/servers.html" %}
+<div class="dashboard-grid">
+  <section class="panel panel-servers" aria-labelledby="servers-title">
+    <div class="panel-head">
+      <div>
+        <span class="section-title" id="servers-title" data-i18n="section.servers">Servers</span>
+        <p data-i18n="dash.servers.sub">queue, capacity and policy signals</p>
+      </div>
+    </div>
+    <div class="servers-grid" id="server-cards"
+         hx-get="/ui/poll?section=servers"
+         hx-trigger="every 15s"
+         hx-swap="innerHTML">
+      {% include "partials/servers.html" %}
+    </div>
+  </section>
+
+  <section class="panel panel-runs" aria-labelledby="runs-title">
+    <div class="panel-head">
+      <div>
+        <span class="section-title" id="runs-title" data-i18n="dash.run.lanes">Run lanes</span>
+        <p data-i18n="dash.runs.sub">jobctl records plus scheduler-only jobs</p>
+      </div>
+    </div>
+    <div id="run-buckets"
+         hx-get="/ui/poll?section=buckets"
+         hx-trigger="every 5s"
+         hx-swap="innerHTML">
+      {% include "partials/buckets.html" %}
+    </div>
+  </section>
 </div>
 
-<hr class="section-sep"/>
+<section class="panel panel-config" aria-labelledby="config-title">
+  <div class="panel-head">
+    <div>
+      <span class="section-title" id="config-title" data-i18n="dash.config">Configuration</span>
+      <p data-i18n="dash.config.sub">resolved paths, daemon settings and policy defaults</p>
+    </div>
+  </div>
 
-{# ---- Run Buckets ---- #}
-<div id="run-buckets"
-     hx-get="/ui/poll?section=buckets"
-     hx-trigger="every 5s"
-     hx-swap="innerHTML">
-  {% include "partials/buckets.html" %}
-</div>
+  <div class="config-grid">
+    <div class="config-card">
+      <h3 data-i18n="config.paths">Paths</h3>
+      <div class="config-kv mt-1">
+        <span>state root</span><code>{{ config_panel.state_root }}</code>
+        <span>config</span><code>{{ config_panel.jobctl_config_path }}</code>
+        <span>database</span><code>{{ config_panel.db_path }}</code>
+        <span>run dir</span><code>{{ config_panel.run_dir }}</code>
+        <span>cluster yaml</span><code>{{ config_panel.cluster_yaml_path }}</code>
+      </div>
+    </div>
+
+    <div class="config-card">
+      <h3 data-i18n="config.runtime">Runtime</h3>
+      <div class="config-kv mt-1">
+        <span>daemon</span><code>{{ config_panel.daemon_host }}:{{ config_panel.daemon_port }}</code>
+        <span>analyzer</span><code>{{ config_panel.analyzer }}</code>
+        <span>macOS notify</span><code>{{ 'on' if config_panel.notify_macos_enabled else 'off' }}</code>
+        <span>notify window</span><code>{{ config_panel.notify_window_seconds }}s</code>
+        <span>sound</span><code>{{ config_panel.notify_sound }}</code>
+      </div>
+    </div>
+
+    <div class="config-card">
+      <h3 data-i18n="config.policies">Default Policies</h3>
+      {% if config_panel.policies %}
+      <div class="config-list mt-1">
+        {% for policy in config_panel.policies %}
+        <div class="config-list-row">
+          <strong>{{ policy.server }}</strong>
+          <span>{{ policy.mode }}</span>
+          <code>{{ policy.target_idle_pct }}% idle</code>
+          <code>{{ policy.kernel_cpus }}c/kernel</code>
+          {% if policy.max_active %}<code>max {{ policy.max_active }}</code>{% endif %}
+          {% if not policy.enabled %}<span class="text-muted">disabled</span>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty-bucket" data-i18n="config.no.policies">No default policies configured.</div>
+      {% endif %}
+    </div>
+
+    <div class="config-card">
+      <h3 data-i18n="config.servers">Configured Servers</h3>
+      {% if config_panel.servers %}
+      <div class="config-list mt-1">
+        {% for srv in config_panel.servers %}
+        <div class="config-list-row">
+          <strong>{{ srv.name }}</strong>
+          <span>{{ srv.backend }}</span>
+          <code>{{ srv.host }}</code>
+          {% if srv.partition %}<code>{{ srv.partition }}</code>{% endif %}
+          {% if srv.cpus_per_task %}<code>{{ srv.cpus_per_task }}c</code>{% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty-bucket" data-i18n="config.no.servers">No servers configured in cluster.yaml.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <details class="config-snippet">
+    <summary>
+      <span data-i18n="config.snippet">TOML shape</span>
+      <span>{{ config_panel.policies | length }} polic{{ 'y' if (config_panel.policies | length) == 1 else 'ies' }}</span>
+    </summary>
+<pre><code>[jobctl]
+state_root = "{{ config_panel.state_root }}"
+daemon_host = "{{ config_panel.daemon_host }}"
+daemon_port = {{ config_panel.daemon_port }}
+
+{% for policy in config_panel.policies -%}
+[jobctl.default_policies.{{ policy.server }}]
+mode = "{{ policy.mode }}"
+target_idle_pct = {{ policy.target_idle_pct }}
+kernel_cpus = {{ policy.kernel_cpus }}
+{% if policy.max_active %}max_active = {{ policy.max_active }}
+{% endif %}
+{% endfor -%}</code></pre>
+  </details>
+</section>
 
 {% endblock %}

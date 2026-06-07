@@ -30,7 +30,7 @@ class LocalBackend(Backend):
 
     def __init__(self, workdir_root: str | None = None) -> None:
         if workdir_root is None:
-            workdir_root = str(Path.home() / ".jobctl" / "runs")
+            workdir_root = str(Path(os.environ.get("JOBCTL_HOME", str(Path.home() / ".jobctl"))) / "runs")
         self._workdir_root = workdir_root
         Path(self._workdir_root).mkdir(parents=True, exist_ok=True)
 

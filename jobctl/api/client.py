@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any
 
@@ -306,7 +307,16 @@ def ensure_daemon(
         The base URL of the running daemon, e.g. "http://127.0.0.1:7421".
     """
     if config is None:
-        config = {}
+        try:
+            from jobctl.config import load_config
+
+            cfg = load_config()
+            config = {
+                "daemon_host": cfg.daemon_host,
+                "daemon_port": cfg.daemon_port,
+            }
+        except Exception:
+            config = {}
 
     host = config.get("daemon_host", "127.0.0.1")
     port = config.get("daemon_port", 7421)
@@ -325,9 +335,18 @@ def ensure_daemon(
     from jobctl.logsetup import log_path
     daemon_log = log_path("daemon")
     logger.info("Starting jobctl daemon on %s (log: %s)", base_url, daemon_log)
-    _log_fh = open(daemon_log, "a", buffering=1)
+    try:
+        _log_fh = open(daemon_log, "a", buffering=1)
+    except OSError as exc:
+        fallback_log = f"{tempfile.gettempdir()}/jobctl-daemon.log"
+        logger.warning("daemon log %s is not writable (%s); using %s", daemon_log, exc, fallback_log)
+        _log_fh = open(fallback_log, "a", buffering=1)
     subprocess.Popen(
-        [sys.executable, "-m", "jobctl.cli.main", "serve"],
+        [
+            sys.executable, "-m", "jobctl.cli.main", "serve",
+            "--host", str(host),
+            "--port", str(port),
+        ],
         stdout=_log_fh,
         stderr=subprocess.STDOUT,
         start_new_session=True,

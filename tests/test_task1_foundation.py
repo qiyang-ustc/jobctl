@@ -66,6 +66,22 @@ class TestConfig:
         assert isinstance(cfg.daemon_port, int)
         assert cfg.daemon_port > 0
 
+    def test_jobctl_home_sets_state_paths(self, tmp_path, monkeypatch):
+        """JOBCTL_HOME is the single state root for DB/config/run defaults."""
+        from jobctl.config import load_config
+
+        root = tmp_path / "jobctl-home"
+        monkeypatch.setenv("JOBCTL_HOME", str(root))
+        cfg = load_config(
+            cluster_yaml_path=str(tmp_path / "nonexistent.yaml"),
+            jobctl_config_path=str(root / "missing.toml"),
+        )
+        assert cfg.state_root == str(root)
+        assert cfg.db_path == str(root / "jobctl.db")
+        assert cfg.run_dir == str(root / "runs")
+        assert cfg.jobctl_config_path == str(root / "missing.toml")
+        assert cfg.cluster_yaml_path == str(tmp_path / "nonexistent.yaml")
+
     def test_jobctl_settings_from_toml(self, tmp_path):
         """load_config reads optional jobctl config toml."""
         import tomllib as tomllib_module
@@ -81,6 +97,10 @@ class TestConfig:
         config_file = config_dir / "config.toml"
         config_file.write_text(
             '[jobctl]\ndb_path = "/custom/db.sqlite"\ndaemon_port = 9999\n'
+            '[jobctl.default_policies.oblix]\n'
+            'mode = "cpu_fill_idle"\n'
+            'target_idle_pct = 5\n'
+            'kernel_cpus = 2\n'
         )
 
         cfg = load_config(
@@ -89,6 +109,7 @@ class TestConfig:
         )
         assert cfg.db_path == "/custom/db.sqlite"
         assert cfg.daemon_port == 9999
+        assert cfg.default_policies["oblix"]["target_idle_pct"] == 5
 
 
 # ---------------------------------------------------------------------------

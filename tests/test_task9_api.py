@@ -239,6 +239,22 @@ class TestSubmitRun:
         assert resp.status_code == 200
         assert resp.json()["backend"] == "local"
 
+    def test_submit_failure_persists_observation_card(self, app_client, sample_jobfile_yaml):
+        """A backend submit error still produces an inspectable observation card."""
+        reg = app_client.post("/jobfiles", json={"path": sample_jobfile_yaml})
+        jf_id = reg.json()["id"]
+        resp = app_client.post("/runs", json={
+            "jobfile_id": jf_id,
+            "params": {},
+            "backend_override": {"backend": "does-not-exist"},
+        })
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["state"] == "failed"
+        assert data["expectation_match"] == "failed"
+        assert data["observation_card"]["status"] == "failed"
+        assert "Backend submit failed" in data["observation_card"]["key_evidence"][0]
+
 
 # ---------------------------------------------------------------------------
 # GET /runs, /runs/{id}
@@ -387,6 +403,42 @@ class TestServers:
         resp = app_client.get("/servers")
         assert resp.status_code == 200
         assert isinstance(resp.json(), list)
+
+    def test_list_servers_includes_policy_snapshot(self, tmp_path):
+        from fastapi.testclient import TestClient
+        from jobctl.api.server import create_app
+        from jobctl.db.models import Server
+
+        app = create_app(
+            config={
+                "db_path": str(tmp_path / "policy.db"),
+                "run_dir": str(tmp_path / "runs"),
+                "default_policies": {
+                    "oblix": {
+                        "mode": "cpu_fill_idle",
+                        "target_idle_pct": 5,
+                        "kernel_cpus": 2,
+                    }
+                },
+            },
+            start_monitor=False,
+        )
+        app.state.store.upsert_server(Server(
+            name="oblix",
+            backend_type="slurm",
+            online=True,
+            last_heartbeat=None,
+            cpu={}, mem={}, gpu={}, disk={},
+            slurm_queue={"idle_cpus": 60, "total_cpus": 100},
+            note=None,
+        ))
+
+        resp = TestClient(app).get("/servers")
+        assert resp.status_code == 200
+        policy = resp.json()[0]["policy"]
+        assert policy["target_idle_pct"] == 5.0
+        assert policy["free_cpus_after_reserve"] == 55
+        assert policy["kernels_available"] == 27
 
 
 # ---------------------------------------------------------------------------

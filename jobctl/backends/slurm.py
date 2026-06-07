@@ -88,6 +88,9 @@ class SlurmBackend(Backend):
         self._host = server_config.get("host", server)
         self._user = server_config.get("user")
         self._remote_path_template = server_config.get("remote_path", f"/tmp/jobctl/{server}")
+        self._local_run_dir = server_config.get("run_dir") or str(
+            Path(os.environ.get("JOBCTL_HOME", str(Path.home() / ".jobctl"))) / "runs"
+        )
         # run_cmd is used for SLURM commands (sbatch, squeue, sacct, scancel).
         # Defaults to ssh-wrapped execution; tests inject a fakebin runner.
         self._run_cmd = run_cmd or self._default_ssh_run_cmd
@@ -229,8 +232,8 @@ class SlurmBackend(Backend):
         job_id = run.remote_job_id or ""
         remote_workdir = run.workdir or "."
 
-        # Local mirror: ~/.jobctl/runs/<run_id>/
-        local_mirror = str(Path.home() / ".jobctl" / "runs" / run.run_id)
+        # Local mirror: <configured run_dir>/<run_id>/
+        local_mirror = str(Path(self._local_run_dir) / run.run_id)
         Path(local_mirror).mkdir(parents=True, exist_ok=True)
 
         # Rsync remote workdir -> local mirror (best-effort, non-fatal on error)
