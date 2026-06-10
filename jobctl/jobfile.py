@@ -10,6 +10,8 @@ Public API:
 from __future__ import annotations
 
 import hashlib
+import re
+import string
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +20,14 @@ from typing import Any
 import yaml
 
 from jobctl.db.models import JobFile
+
+
+_ENV_PLACEHOLDER_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
+
+def _preserved_shell_placeholder(field_name: str, format_spec: str) -> str:
+    suffix = f":{format_spec}" if format_spec else ""
+    return "{" + field_name + suffix + "}"
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +127,26 @@ def render_command(jobfile: JobFile, params: dict) -> str:
     Example: "julia {script} --chi {chi}" + {"script": "s.jl", "chi": 60}
              -> "julia s.jl --chi 60"
     """
-    return jobfile.command_template.format(**{k: str(v) for k, v in params.items()})
+    values = {k: str(v) for k, v in params.items()}
+    formatter = string.Formatter()
+    rendered: list[str] = []
+    for literal, field_name, format_spec, conversion in formatter.parse(jobfile.command_template):
+        rendered.append(literal)
+        if field_name is None:
+            continue
+        if field_name in values:
+            value = values[field_name]
+            if conversion:
+                value = formatter.convert_field(value, conversion)
+            if format_spec:
+                value = formatter.format_field(value, format_spec)
+            rendered.append(str(value))
+            continue
+        if literal.endswith("$") and conversion is None and _ENV_PLACEHOLDER_RE.match(field_name):
+            rendered.append(_preserved_shell_placeholder(field_name, format_spec))
+            continue
+        raise KeyError(field_name)
+    return "".join(rendered)
 
 
 def content_hash(jobfile: JobFile) -> str:

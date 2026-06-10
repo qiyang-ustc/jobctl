@@ -8,8 +8,10 @@ Public API:
 from __future__ import annotations
 
 import csv
+import glob
 import hashlib
 import json
+import logging
 import os
 import uuid
 from datetime import datetime, timezone
@@ -17,6 +19,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from jobctl.db.models import Artifact, ArtifactType
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from jobctl.db.models import JobFile, Run
@@ -185,6 +189,23 @@ def _sha256(path: str) -> str:
     return h.hexdigest()
 
 
+def _glob_artifact_pattern(workdir: Path, pattern: str) -> list[Path]:
+    """Return paths matching a relative-to-workdir or absolute artifact glob."""
+    text = os.path.expanduser(str(pattern))
+    try:
+        if Path(text).is_absolute():
+            return [Path(p) for p in glob.glob(text, recursive=True)]
+        return list(workdir.glob(text))
+    except (NotImplementedError, OSError, ValueError) as exc:
+        logger.warning(
+            "artifact pattern ignored for workdir=%s pattern=%r: %s",
+            workdir,
+            pattern,
+            exc,
+        )
+        return []
+
+
 # ---------------------------------------------------------------------------
 # index_run
 # ---------------------------------------------------------------------------
@@ -214,13 +235,7 @@ def index_run(store: "Store", run: "Run", jobfile: "JobFile") -> list[Artifact]:
     # Gather matching paths
     matched: list[Path] = []
     for pattern in patterns:
-        # Support both simple globs and recursive **/ patterns
-        if "**" in pattern:
-            found = list(workdir.rglob(pattern.lstrip("**/").lstrip("**\\")))
-            # Safer: use glob with the full pattern from workdir
-            found = list(workdir.glob(pattern))
-        else:
-            found = list(workdir.glob(pattern))
+        found = _glob_artifact_pattern(workdir, pattern)
         for p in found:
             if p.is_file() and p not in matched:
                 matched.append(p)

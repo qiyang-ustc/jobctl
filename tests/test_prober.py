@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import subprocess
+import logging
 
 from jobctl.monitor.prober import SshProber
 
@@ -91,6 +92,19 @@ def test_probe_unreachable_returns_none():
         raise subprocess.TimeoutExpired(cmd="ssh", timeout=to)
     p3 = SshProber({"x": {}}, runner=boom)
     assert p3.probe("x") is None
+
+
+def test_probe_timeout_log_is_concise(caplog):
+    def boom(t, r, to):
+        raise subprocess.TimeoutExpired(cmd=["ssh", "x", "very long remote command"], timeout=to)
+
+    prober = SshProber({"x": {}}, runner=boom)
+    with caplog.at_level(logging.INFO, logger="jobctl.monitor.prober"):
+        assert prober.probe("x") is None
+
+    messages = " ".join(record.message for record in caplog.records)
+    assert "timeout after 8s" in messages
+    assert "very long remote command" not in messages
 
 
 def test_probe_uses_ssh_alias_with_optional_user():

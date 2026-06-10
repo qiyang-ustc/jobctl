@@ -823,6 +823,57 @@ class TestJobfile:
         cmd = render_command(jf, {"script": "/tmp/sim.jl", "chi": 60})
         assert cmd == "julia /tmp/sim.jl --chi 60"
 
+    def test_render_command_preserves_slurm_env_placeholders(self, tmp_path):
+        """Shell env placeholders are not treated as job params."""
+        from jobctl.jobfile import load_jobfile, render_command
+
+        manifest = tmp_path / "job.jobfile.yaml"
+        self._write_manifest(manifest, {
+            "name": "my-job",
+            "command": "julia run.jl --threads ${SLURM_CPUS_PER_TASK} --chi {chi}",
+            "params": {
+                "chi": {"type": "int", "default": 40},
+            },
+            "backends": [{"backend": "slurm"}],
+        })
+        jf = load_jobfile(str(manifest))
+        cmd = render_command(jf, {"chi": 60})
+        assert cmd == "julia run.jl --threads ${SLURM_CPUS_PER_TASK} --chi 60"
+
+    def test_render_command_still_rejects_missing_job_params(self, tmp_path):
+        """Lowercase missing placeholders remain configuration errors."""
+        from jobctl.jobfile import load_jobfile, render_command
+
+        manifest = tmp_path / "job.jobfile.yaml"
+        self._write_manifest(manifest, {
+            "name": "my-job",
+            "command": "julia {script} --chi {chi}",
+            "params": {
+                "chi": {"type": "int", "default": 40},
+            },
+            "backends": [{"backend": "local"}],
+        })
+        jf = load_jobfile(str(manifest))
+        with pytest.raises(KeyError):
+            render_command(jf, {"chi": 60})
+
+    def test_render_command_rejects_missing_uppercase_job_params(self, tmp_path):
+        """Uppercase physics-style params still need explicit values."""
+        from jobctl.jobfile import load_jobfile, render_command
+
+        manifest = tmp_path / "job.jobfile.yaml"
+        self._write_manifest(manifest, {
+            "name": "my-job",
+            "command": "julia run.jl --D {D}",
+            "params": {
+                "D": {"type": "int", "required": True},
+            },
+            "backends": [{"backend": "local"}],
+        })
+        jf = load_jobfile(str(manifest))
+        with pytest.raises(KeyError):
+            render_command(jf, {})
+
     def test_content_hash_deterministic(self, tmp_path):
         """content_hash is stable across calls."""
         from jobctl.jobfile import load_jobfile, content_hash
