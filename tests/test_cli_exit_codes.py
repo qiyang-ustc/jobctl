@@ -37,12 +37,14 @@ class _FakeClient:
         self._state = state
         self._raise_timeout = raise_timeout
         self.timeout_passed = None
+        self.poll_interval_passed = None
 
     def submit(self, **kwargs):
         return {"run_id": "run-fake", "state": "submitted"}
 
     def await_run(self, run_id, poll_interval=1.0, timeout=600.0):
         self.timeout_passed = timeout
+        self.poll_interval_passed = poll_interval
         if self._raise_timeout:
             raise TimeoutError("nope")
         return {"run_id": run_id, "state": self._state, "observation_card": None}
@@ -86,9 +88,16 @@ def test_run_wait_passes_12h_timeout_to_client(fake):
     client = fake(state="completed")
     CliRunner().invoke(app, ["run", "--wait", "somejob"])
     assert client.timeout_passed == 12 * 60 * 60
+    assert client.poll_interval_passed == 1.0
 
 
 def test_run_wait_respects_timeout_override(fake):
     client = fake(state="completed")
     CliRunner().invoke(app, ["run", "--wait", "--timeout", "30", "somejob"])
     assert client.timeout_passed == 30.0
+
+
+def test_await_uses_default_poll_interval(fake):
+    client = fake(state="completed")
+    CliRunner().invoke(app, ["await", "run-fake"])
+    assert client.poll_interval_passed == 1.0

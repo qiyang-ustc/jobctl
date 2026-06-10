@@ -44,6 +44,13 @@ def _ssh_runner(target: str, remote: str, timeout: float) -> subprocess.Complete
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
 
 
+def _exception_summary(exc: Exception) -> str:
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return f"timeout after {exc.timeout:g}s"
+    message = str(exc)
+    return f"{exc.__class__.__name__}: {message}" if message else exc.__class__.__name__
+
+
 def _num(s: str, default: float = 0.0) -> float:
     try:
         return float(s)
@@ -108,7 +115,7 @@ class SshProber:
         try:
             r = self._runner(target, _REMOTE, self._timeout)
         except Exception as exc:                 # timeout, ssh missing, etc.
-            logger.info("probe %s: unreachable (%s)", name, exc)
+            logger.info("probe %s: unreachable (%s)", name, _exception_summary(exc))
             return None
         if r.returncode != 0 or "JOBCTL_OK" not in (r.stdout or ""):
             return None

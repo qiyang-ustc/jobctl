@@ -381,6 +381,23 @@ class TestIndexRun:
         assert len(artifacts) == 1
         assert Path(artifacts[0].local_path).name == "result.csv"
 
+    def test_absolute_glob_patterns_are_supported(self, tmp_path):
+        """Absolute artifact globs should not break terminal indexing."""
+        from jobctl.artifacts.indexer import index_run
+        wd = tmp_path / "wd"
+        wd.mkdir()
+        (wd / "result.csv").write_text("a,b\n1,2\n")
+
+        store = _make_store(tmp_path)
+        jf = _make_jobfile("jf-abs", [str(wd / "*.csv")])
+        run = _make_run("run-abs", str(wd), "jf-abs")
+        store.add_jobfile(jf)
+        store.add_run(run)
+
+        artifacts = index_run(store, run, jf)
+        assert len(artifacts) == 1
+        assert Path(artifacts[0].local_path).name == "result.csv"
+
     def test_image_thumbnail_in_preview(self, workdir, tmp_path):
         from jobctl.artifacts.indexer import index_run
         store = _make_store(tmp_path)

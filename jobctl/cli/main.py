@@ -244,7 +244,7 @@ def run(
     if wait:
         # Block until terminal, then print the final run dict (with observation card)
         try:
-            final = client.await_run(run_id, poll_interval=0.5, timeout=timeout)
+            final = client.await_run(run_id, timeout=timeout)
         except TimeoutError:
             typer.echo(f"Timeout waiting for run {run_id} (waited {timeout:g}s)", err=True)
             raise typer.Exit(124)
@@ -303,7 +303,7 @@ def await_cmd(
     Exit code: 0 completed · 2 failed · 3 cancelled · 4 stuck · 124 timeout."""
     client = _get_client()
     try:
-        final = client.await_run(run_id, poll_interval=0.2, timeout=timeout)
+        final = client.await_run(run_id, timeout=timeout)
     except TimeoutError:
         typer.echo(f"Timeout waiting for run {run_id} (waited {timeout:g}s)", err=True)
         raise typer.Exit(124)
