@@ -14,6 +14,7 @@ from jobctl.db.models import (
     Artifact,
     ArtifactType,
     Criterion,
+    DDL_RUN_PARENT_RETRY_INDEX,
     ExpectationContract,
     Feedback,
     Health,
@@ -68,9 +69,12 @@ class Store:
         run_cols = {r[1] for r in conn.execute("PRAGMA table_info(runs)")}
         if "slurm_request" not in run_cols:
             conn.execute("ALTER TABLE runs ADD COLUMN slurm_request TEXT")
-        for col in ("title", "note", "tags"):
+        for col in ("title", "note", "tags", "parent_run_id", "auto_policy"):
             if col not in run_cols:
                 conn.execute(f"ALTER TABLE runs ADD COLUMN {col} TEXT")
+        if "attempt" not in run_cols:
+            conn.execute("ALTER TABLE runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1")
+        conn.execute(DDL_RUN_PARENT_RETRY_INDEX)
         conn.commit()
 
     # ------------------------------------------------------------------
@@ -152,8 +156,8 @@ class Store:
                  exit_code, submitted_at, started_at, finished_at, last_heartbeat,
                  workdir, stdout_path, stderr_path, resource_summary,
                  expectation_match, observation_card, slurm_request,
-                 title, note, tags)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 title, note, tags, parent_run_id, attempt, auto_policy)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run.run_id, run.jobfile_id, run.jobfile_version,
@@ -169,6 +173,9 @@ class Store:
                 _j(run.slurm_request) if run.slurm_request is not None else None,
                 run.title, run.note,
                 _j(run.tags) if run.tags is not None else None,
+                run.parent_run_id,
+                run.attempt,
+                _j(run.auto_policy) if run.auto_policy is not None else None,
             ),
         )
         conn.commit()
@@ -186,7 +193,7 @@ class Store:
         Supported kwargs: state, health, exit_code, started_at, finished_at,
         last_heartbeat, workdir, stdout_path, stderr_path, remote_job_id,
         resource_summary, expectation_match, observation_card, slurm_request,
-        title, note, tags.
+        title, note, tags, parent_run_id, attempt, auto_policy.
         """
         if not kwargs:
             return
@@ -202,7 +209,7 @@ class Store:
                 val = val.value if isinstance(val, Health) else val
             elif key in ("expectation_match",):
                 val = val.value if isinstance(val, Match) else val
-            elif key in ("resource_summary", "observation_card", "slurm_request", "tags"):
+            elif key in ("resource_summary", "observation_card", "slurm_request", "tags", "auto_policy"):
                 val = _j(val) if val is not None else None
 
             set_parts.append(f"{key} = ?")
@@ -213,7 +220,12 @@ class Store:
         conn.execute(sql, values)
         conn.commit()
 
-    def list_runs(self, state: State | None = None, jobfile_id: str | None = None) -> list[Run]:
+    def list_runs(
+        self,
+        state: State | None = None,
+        jobfile_id: str | None = None,
+        parent_run_id: str | None = None,
+    ) -> list[Run]:
         conn = self._get_conn()
         conditions = []
         params: list[Any] = []
@@ -225,6 +237,10 @@ class Store:
         if jobfile_id is not None:
             conditions.append("jobfile_id = ?")
             params.append(jobfile_id)
+
+        if parent_run_id is not None:
+            conditions.append("parent_run_id = ?")
+            params.append(parent_run_id)
 
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         rows = conn.execute(
@@ -260,6 +276,9 @@ class Store:
             title=row["title"] if "title" in row.keys() else None,
             note=row["note"] if "note" in row.keys() else None,
             tags=_dj(row["tags"], None) if "tags" in row.keys() else None,
+            parent_run_id=row["parent_run_id"] if "parent_run_id" in row.keys() else None,
+            attempt=row["attempt"] if "attempt" in row.keys() and row["attempt"] is not None else 1,
+            auto_policy=_dj(row["auto_policy"], None) if "auto_policy" in row.keys() else None,
         )
 
     # ------------------------------------------------------------------

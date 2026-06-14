@@ -281,6 +281,7 @@ def _register_routes(app: FastAPI) -> None:
             title (str, optional) — human-readable label: what this run is for
             note (str, optional) — freeform description
             tags (list[str], optional) — classification / loose grouping
+            auto_policy (dict, optional) — automatic recovery policy
         """
         from jobctl.jobfile import resolve_params, render_command, input_hashes as calc_input_hashes
         from jobctl.backends.base import select_backend, get_backend
@@ -331,6 +332,27 @@ def _register_routes(app: FastAPI) -> None:
                 result["reused"] = True
                 return result
 
+        resources = dict(body.get("resources") or {})
+        auto_policy = _normalize_auto_policy(body.get("auto_policy"), body)
+        if auto_policy and "max" not in auto_policy and cfg.get("mem_auto_max"):
+            auto_policy["max"] = cfg["mem_auto_max"]
+
+        if auto_policy and auto_policy.get("mem_auto"):
+            from jobctl.memory.mem_auto import estimate_mem_from_history
+
+            estimate = estimate_mem_from_history(
+                store,
+                jobfile_id=jf.id,
+                params=resolved_params,
+                input_hashes=ihashes,
+                current_mem=resources.get("mem"),
+                factor=auto_policy.get("factor", 1.5),
+                cap=auto_policy.get("max"),
+            )
+            if estimate:
+                resources["mem"] = estimate["mem"]
+                auto_policy["initial_estimate"] = estimate
+
         # Select backend
         servers = store.list_servers()
         backend_override = body.get("backend_override")
@@ -364,10 +386,13 @@ def _register_routes(app: FastAPI) -> None:
             resource_summary={},
             expectation_match=None,
             observation_card=None,
-            slurm_request=body.get("resources") or None,
+            slurm_request=resources or None,
             title=(body.get("title") or None),
             note=(body.get("note") or None),
             tags=(body.get("tags") or None),
+            parent_run_id=None,
+            attempt=1,
+            auto_policy=auto_policy,
         )
         store.add_run(run)
 
@@ -591,21 +616,27 @@ def _register_routes(app: FastAPI) -> None:
             resource_summary={},
             expectation_match=None,
             observation_card=None,
+            slurm_request=_strip_slurm_job_id(orig.slurm_request),
             title=orig.title,
             note=orig.note,
             tags=orig.tags,
+            parent_run_id=None,
+            attempt=1,
+            auto_policy=orig.auto_policy,
         )
         store.add_run(new_run)
 
         try:
             backend = get_backend(backend_name, server_name, cfg)
             submit_result = backend.submit(new_run, jf)
-            store.update_run(
-                new_run_id,
+            update_fields = dict(
                 state=State.SUBMITTED,
                 remote_job_id=submit_result.remote_job_id,
                 workdir=submit_result.workdir,
             )
+            if submit_result.slurm_request is not None:
+                update_fields["slurm_request"] = submit_result.slurm_request
+            store.update_run(new_run_id, **update_fields)
             monitor = _monitor(request)
             monitor._backends[new_run_id] = backend
         except Exception as exc:
@@ -888,6 +919,9 @@ def _register_routes(app: FastAPI) -> None:
             "title": getattr(run, "title", None),
             "note": getattr(run, "note", None),
             "tags": getattr(run, "tags", None),
+            "parent_run_id": getattr(run, "parent_run_id", None),
+            "attempt": getattr(run, "attempt", 1),
+            "auto_policy": getattr(run, "auto_policy", None),
             "display_title": _display_title(run, jobfile_name),
         }
 
@@ -1076,6 +1110,54 @@ class _DictObj:
 
 
 # ---------------------------------------------------------------------------
+# Run policy helpers
+# ---------------------------------------------------------------------------
+
+def _normalize_auto_policy(policy: dict | None, body: dict | None = None) -> dict | None:
+    body = body or {}
+    result = dict(policy or {})
+    if body.get("mem_auto"):
+        result["mem_auto"] = True
+    if not result.get("mem_auto"):
+        return None
+
+    try:
+        factor = float(result.get("factor", body.get("mem_auto_factor", 1.5)))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="mem_auto factor must be numeric")
+    if factor <= 1.0:
+        raise HTTPException(status_code=422, detail="mem_auto factor must be > 1.0")
+
+    try:
+        max_attempts = int(result.get("max_attempts", body.get("mem_auto_attempts", 3)))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="mem_auto max_attempts must be an integer")
+    if max_attempts < 1:
+        raise HTTPException(status_code=422, detail="mem_auto max_attempts must be >= 1")
+
+    normalized: dict[str, Any] = {
+        "mem_auto": True,
+        "factor": factor,
+        "max_attempts": max_attempts,
+    }
+    cap = result.get("max", body.get("mem_auto_max"))
+    if cap:
+        normalized["max"] = str(cap)
+    for key, value in result.items():
+        if key not in normalized and key not in {"factor", "max_attempts", "max"}:
+            normalized[key] = value
+    return normalized
+
+
+def _strip_slurm_job_id(slurm_request: dict | None) -> dict | None:
+    if not slurm_request:
+        return None
+    request = dict(slurm_request)
+    request.pop("job_id", None)
+    return request or None
+
+
+# ---------------------------------------------------------------------------
 # Serialisation helpers
 # ---------------------------------------------------------------------------
 
@@ -1127,6 +1209,9 @@ def _run_to_dict(run, jobfile_name: str | None = None) -> dict:
         "title": getattr(run, "title", None),
         "note": getattr(run, "note", None),
         "tags": getattr(run, "tags", None),
+        "parent_run_id": getattr(run, "parent_run_id", None),
+        "attempt": getattr(run, "attempt", 1),
+        "auto_policy": getattr(run, "auto_policy", None),
         "display_title": _display_title(run, jobfile_name),
     }
 

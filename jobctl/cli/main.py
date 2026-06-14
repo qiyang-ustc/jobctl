@@ -152,6 +152,10 @@ def run(
     note: Annotated[Optional[str], typer.Option("--note", help="Freeform description of this run")] = None,
     tag: Annotated[Optional[list[str]], typer.Option("--tag", help="Tag for classification/grouping (repeatable)")] = None,
     mem: Annotated[Optional[str], typer.Option("--mem", help="SLURM memory (e.g. 100M, 4G)")] = None,
+    mem_auto: Annotated[bool, typer.Option("--mem-auto/--no-mem-auto", "--mem_auto/--no_mem_auto", help="Auto-retry CPU OOM runs with a larger SLURM --mem; GPU OOM stops and notifies")] = False,
+    mem_auto_factor: Annotated[float, typer.Option("--mem-auto-factor", help="CPU OOM retry growth factor")] = 1.5,
+    mem_auto_max: Annotated[Optional[str], typer.Option("--mem-auto-max", help="Maximum SLURM memory for --mem-auto retries (e.g. 64G)")] = None,
+    mem_auto_attempts: Annotated[int, typer.Option("--mem-auto-attempts", help="Total attempts including the original run")] = 3,
     cpus: Annotated[Optional[int], typer.Option("--cpus", help="SLURM cpus-per-task")] = None,
     time_limit: Annotated[Optional[str], typer.Option("--time", help="SLURM time limit (e.g. 00:11:00)")] = None,
     partition: Annotated[Optional[str], typer.Option("--partition", help="SLURM partition")] = None,
@@ -201,6 +205,22 @@ def run(
     if account is not None:
         resources["account"] = account
 
+    auto_policy: dict | None = None
+    if mem_auto:
+        if mem_auto_factor <= 1.0:
+            typer.echo("--mem-auto-factor must be > 1.0", err=True)
+            raise typer.Exit(1)
+        if mem_auto_attempts < 1:
+            typer.echo("--mem-auto-attempts must be >= 1", err=True)
+            raise typer.Exit(1)
+        auto_policy = {
+            "mem_auto": True,
+            "factor": mem_auto_factor,
+            "max_attempts": mem_auto_attempts,
+        }
+        if mem_auto_max:
+            auto_policy["max"] = mem_auto_max
+
     submit_kwargs: dict = {
         "params": params,
         "backend_override": backend_override,
@@ -210,6 +230,7 @@ def run(
         "title": title,
         "note": note,
         "tags": tag or None,
+        "auto_policy": auto_policy,
     }
     if os.path.isfile(jobfile_ref):
         try:
@@ -366,11 +387,15 @@ def logs(
     run_id: Annotated[str, typer.Argument(help="Run ID")],
     stream: Annotated[str, typer.Option("--stream", help="stdout or stderr")] = "stdout",
     tail: Annotated[int, typer.Option("--tail", help="Number of lines to tail")] = 200,
+    json_out: Annotated[bool, typer.Option("--json", help="Output JSON")] = False,
 ):
     """Tail stdout or stderr for a run."""
     client = _get_client()
     text = client.logs(run_id, stream=stream, tail=tail)
-    typer.echo(text, nl=False)
+    if json_out:
+        _print_json({"run_id": run_id, "stream": stream, "tail": tail, "text": text})
+    else:
+        typer.echo(text, nl=False)
 
 
 # ---------------------------------------------------------------------------

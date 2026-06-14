@@ -100,6 +100,10 @@ class Run:
     title: str | None = None
     note: str | None = None
     tags: list[str] | None = None
+    # Retry lineage for automatic recovery flows such as --mem-auto.
+    parent_run_id: str | None = None
+    attempt: int = 1
+    auto_policy: dict | None = None
 
 
 @dataclass
@@ -208,8 +212,17 @@ CREATE TABLE IF NOT EXISTS runs (
     title TEXT,
     note TEXT,
     tags TEXT,
+    parent_run_id TEXT,
+    attempt INTEGER NOT NULL DEFAULT 1,
+    auto_policy TEXT,
     FOREIGN KEY (jobfile_id) REFERENCES jobfiles(id)
 )
+"""
+
+DDL_RUN_PARENT_RETRY_INDEX = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_one_child_per_parent
+ON runs(parent_run_id)
+WHERE parent_run_id IS NOT NULL
 """
 
 DDL_ARTIFACTS = """

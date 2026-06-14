@@ -567,6 +567,138 @@ class TestPollRuns:
 
 
 # ===========================================================================
+# Tests: mem-auto OOM handling
+# ===========================================================================
+
+class TestMemAutoOom:
+
+    def _monitor_for_slurm_failure(self, tmp_path, *, stderr_text="", resource_summary=None):
+        Monitor, _ = _import_monitor()
+
+        store = _make_store(tmp_path)
+        jf = _make_jobfile(tmp_path, artifact_patterns=[])
+        jf.backend_prefs = [{"backend": "slurm", "server": "oblix"}]
+        store.add_jobfile(jf)
+
+        stdout_file = tmp_path / "stdout.txt"
+        stdout_file.write_text("")
+        stderr_file = tmp_path / "stderr.txt"
+        stderr_file.write_text(stderr_text)
+
+        run = _make_run(jf, workdir=str(tmp_path), state=State.SUBMITTED)
+        run.backend = "slurm"
+        run.server = "oblix"
+        run.remote_job_id = "123"
+        run.stdout_path = str(stdout_file)
+        run.stderr_path = str(stderr_file)
+        run.slurm_request = {"mem": "1G", "cpus": 1, "time": "01:00:00", "job_id": "123"}
+        run.auto_policy = {"mem_auto": True, "factor": 1.5, "max_attempts": 3}
+        store.add_run(run)
+
+        collect = CollectResult(
+            exit_code=1,
+            stdout_path=str(stdout_file),
+            stderr_path=str(stderr_file),
+            artifact_dir=str(tmp_path),
+            resource_summary=resource_summary or {},
+        )
+        backend = FakeBackend(
+            poll_sequence=[PollResult(state=State.FAILED, resource={}, last_log_mtime=None)],
+            collect_result=collect,
+        )
+        notifier = FakeNotifier()
+        monitor = Monitor(
+            store=store,
+            config={},
+            analyzer=OfflineAnalyzer(),
+            notifiers_factory=lambda r: [notifier],
+        )
+        monitor._backends = {run.run_id: backend}
+        return store, run, backend, notifier, monitor
+
+    def test_cpu_oom_mem_auto_submits_larger_retry(self, tmp_path):
+        store, run, backend, notifier, monitor = self._monitor_for_slurm_failure(
+            tmp_path,
+            resource_summary={"State": "OUT_OF_MEMORY", "MaxRSS": "900M"},
+        )
+
+        asyncio.run(monitor.poll_runs())
+
+        parent = store.get_run(run.run_id)
+        assert parent.observation_card["oom"]["kind"] == "cpu"
+        assert parent.observation_card["auto_retry"]["submitted"] is True
+        children = store.list_runs(parent_run_id=run.run_id)
+        assert len(children) == 1
+        child = children[0]
+        assert child.state == State.SUBMITTED
+        assert child.attempt == 2
+        assert child.slurm_request["mem"] == "1536M"
+        assert child.slurm_request["cpus"] == 1
+        assert "job_id" not in child.slurm_request or child.slurm_request["job_id"] == "fake-123"
+        assert backend.submitted is True
+        assert len(notifier.calls) == 1
+
+    def test_gpu_oom_stops_without_cpu_mem_retry(self, tmp_path):
+        store, run, backend, notifier, monitor = self._monitor_for_slurm_failure(
+            tmp_path,
+            stderr_text="RuntimeError: CUDA out of memory. Tried to allocate 2.00 GiB",
+            resource_summary={"State": "FAILED"},
+        )
+
+        asyncio.run(monitor.poll_runs())
+
+        parent = store.get_run(run.run_id)
+        assert parent.observation_card["oom"]["kind"] == "gpu"
+        assert "auto_retry" not in parent.observation_card
+        assert store.list_runs(parent_run_id=run.run_id) == []
+        assert parent.health == Health.RESOURCE_PRESSURE
+
+    def test_running_gpu_oom_log_is_cancelled_and_notified(self, tmp_path):
+        Monitor, _ = _import_monitor()
+
+        store = _make_store(tmp_path)
+        jf = _make_jobfile(tmp_path, artifact_patterns=[])
+        store.add_jobfile(jf)
+        stdout_file = tmp_path / "stdout.txt"
+        stdout_file.write_text("")
+        stderr_file = tmp_path / "stderr.txt"
+        stderr_file.write_text("RuntimeError: CUDA out of memory while allocating tensor")
+
+        run = _make_run(jf, workdir=str(tmp_path), state=State.RUNNING)
+        run.stdout_path = str(stdout_file)
+        run.stderr_path = str(stderr_file)
+        store.add_run(run)
+
+        backend = FakeBackend(
+            poll_sequence=[PollResult(state=State.RUNNING, resource={}, last_log_mtime=time.time())],
+            collect_result=CollectResult(
+                exit_code=1,
+                stdout_path=str(stdout_file),
+                stderr_path=str(stderr_file),
+                artifact_dir=str(tmp_path),
+                resource_summary={"State": "FAILED"},
+            ),
+        )
+        notifier = FakeNotifier()
+        monitor = Monitor(
+            store=store,
+            config={},
+            analyzer=OfflineAnalyzer(),
+            notifiers_factory=lambda r: [notifier],
+        )
+        monitor._backends = {run.run_id: backend}
+
+        asyncio.run(monitor.poll_runs())
+
+        stored = store.get_run(run.run_id)
+        assert backend.cancelled is True
+        assert stored.state == State.FAILED
+        assert stored.health == Health.RESOURCE_PRESSURE
+        assert stored.observation_card["oom"]["kind"] == "gpu"
+        assert len(notifier.calls) == 1
+
+
+# ===========================================================================
 # Tests: Stuck detection
 # ===========================================================================
 

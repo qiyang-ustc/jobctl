@@ -175,6 +175,7 @@ class TestModels:
             "exit_code", "submitted_at", "started_at", "finished_at",
             "last_heartbeat", "workdir", "stdout_path", "stderr_path",
             "resource_summary", "expectation_match", "observation_card",
+            "slurm_request", "parent_run_id", "attempt", "auto_policy",
         }
         assert required.issubset(fields)
 
@@ -360,6 +361,48 @@ class TestStore:
         got = store.get_run(run.run_id).slurm_request
         assert got == {"partition": "lln", "mem": "100M", "cpus": 1}
 
+    def test_auto_policy_and_lineage_round_trips(self, tmp_path):
+        """mem-auto lineage/policy fields persist via add_run and update_run."""
+        from jobctl.db.store import Store
+        store = Store(str(tmp_path / "test.db"))
+        store.init_schema()
+        store.add_jobfile(make_jobfile())
+        parent = make_run(run_id="run-parent")
+        store.add_run(parent)
+
+        child = make_run(run_id="run-child")
+        child.parent_run_id = parent.run_id
+        child.attempt = 2
+        child.auto_policy = {"mem_auto": True, "factor": 1.5, "max_attempts": 3}
+        store.add_run(child)
+
+        got = store.get_run(child.run_id)
+        assert got.parent_run_id == parent.run_id
+        assert got.attempt == 2
+        assert got.auto_policy == {"mem_auto": True, "factor": 1.5, "max_attempts": 3}
+        assert [r.run_id for r in store.list_runs(parent_run_id=parent.run_id)] == ["run-child"]
+
+        store.update_run(child.run_id, auto_policy={"mem_auto": True, "factor": 2.0})
+        assert store.get_run(child.run_id).auto_policy == {"mem_auto": True, "factor": 2.0}
+
+    def test_retry_lineage_allows_only_one_child_per_parent(self, tmp_path):
+        """DB constraint prevents duplicate auto-retry children for one parent."""
+        from jobctl.db.store import Store
+        store = Store(str(tmp_path / "test.db"))
+        store.init_schema()
+        store.add_jobfile(make_jobfile())
+        parent = make_run(run_id="run-parent")
+        store.add_run(parent)
+
+        child1 = make_run(run_id="run-child-1")
+        child1.parent_run_id = parent.run_id
+        store.add_run(child1)
+
+        child2 = make_run(run_id="run-child-2")
+        child2.parent_run_id = parent.run_id
+        with pytest.raises(sqlite3.IntegrityError):
+            store.add_run(child2)
+
     def test_migration_adds_slurm_request_column(self, tmp_path):
         """A runs table created without slurm_request gets the column on init_schema."""
         db = str(tmp_path / "old.db")
@@ -381,6 +424,7 @@ class TestStore:
         store.init_schema()  # must ALTER TABLE to add the new column
         cols = {r[1] for r in store._get_conn().execute("PRAGMA table_info(runs)")}
         assert "slurm_request" in cols
+        assert {"parent_run_id", "attempt", "auto_policy"} <= cols
 
     def test_update_run_state_health_card(self, tmp_path):
         """update_run mutates state/health/observation_card."""

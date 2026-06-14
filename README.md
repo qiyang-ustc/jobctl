@@ -19,10 +19,11 @@ CLI, API, monitor, and UI views do not need separate bookkeeping.
 jobctl run job.jobfile.yaml --wait --json   # submit, block, get the observation card
 jobctl run job.jobfile.yaml                 # background → prints a run_id
 jobctl run job.jobfile.yaml --title "chi sweep χ=64" --tag sweep   # name what it's for
+jobctl run job.jobfile.yaml --mem-auto      # CPU OOM → retry with larger --mem; GPU OOM → stop + notify
 jobctl await  <run_id> --json               # block on a backgrounded run
 jobctl status <run_id> --json               # state + health (+ title/tags)
 jobctl inspect <run_id> --json              # persisted observation card + record
-jobctl logs <run_id>                        # stdout/stderr tail
+jobctl logs <run_id> --json                 # stdout/stderr tail
 jobctl artifacts <run_id> --json            # indexed artifacts
 jobctl memory query --name <job> --json     # has this run before? can I reuse it?
 jobctl servers --json                       # cluster health, queue, capacity, policy

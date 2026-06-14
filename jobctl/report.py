@@ -22,7 +22,7 @@ REPO = "qiyang-ustc/jobctl"
 _RUN_FIELDS = (
     "run_id", "state", "health", "backend", "server", "remote_job_id",
     "exit_code", "submitted_at", "started_at", "finished_at", "workdir",
-    "slurm_request",
+    "slurm_request", "parent_run_id", "attempt", "auto_policy",
 )
 
 
