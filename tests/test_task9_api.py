@@ -339,6 +339,23 @@ class TestCancelRerun:
         assert new_run["run_id"] != run_id
         assert "run_id" in new_run
 
+    def test_rerun_preserves_resources_and_auto_policy(self, app_client, sample_jobfile_yaml):
+        reg = app_client.post("/jobfiles", json={"path": sample_jobfile_yaml})
+        jf_id = reg.json()["id"]
+        run = app_client.post("/runs", json={
+            "jobfile_id": jf_id,
+            "params": {},
+            "resources": {"mem": "2G", "cpus": 2, "job_id": "old-job"},
+            "auto_policy": {"mem_auto": True, "factor": 1.5, "max_attempts": 3},
+        }).json()
+
+        resp = app_client.post(f"/runs/{run['run_id']}/rerun")
+        assert resp.status_code == 200
+        new_run = resp.json()
+        assert new_run["slurm_request"] == {"mem": "2G", "cpus": 2}
+        assert new_run["auto_policy"]["mem_auto"] is True
+        assert new_run["attempt"] == 1
+
     def test_rerun_nonexistent(self, app_client):
         resp = app_client.post("/runs/nonexistent/rerun")
         assert resp.status_code == 404

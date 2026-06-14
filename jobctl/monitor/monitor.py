@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING
@@ -454,6 +456,12 @@ class Monitor:
             self.store.update_run(run.run_id, **updates)
             run = self.store.get_run(run.run_id)
 
+        # --- Runtime GPU OOM check for logs already visible locally. SLURM CPU
+        # OOM usually appears as a terminal scheduler state; GPU library OOM can
+        # show up in stderr before the process exits, so stop it at poll time.
+        if new_state == State.RUNNING and await self._check_running_gpu_oom(run):
+            return
+
         # --- Update heartbeat (+ clear stale health) for RUNNING runs ---
         if new_state == State.RUNNING:
             self.store.update_run(run.run_id, last_heartbeat=now_iso, health=Health.OK)
@@ -606,6 +614,39 @@ class Monitor:
                 else:
                     match = Match.USABLE
 
+        from jobctl.memory.mem_auto import classify_oom
+
+        oom_diagnosis = classify_oom(run.resource_summary, stdout, stderr)
+        auto_retry_info = None
+        if oom_diagnosis.is_oom:
+            for evidence in oom_diagnosis.evidence:
+                if evidence not in key_evidence:
+                    key_evidence.append(evidence)
+            health = Health.RESOURCE_PRESSURE
+            if match in (None, Match.USABLE, Match.WEAK_SIGNAL, Match.INCONCLUSIVE):
+                match = Match.FAILED
+
+            if oom_diagnosis.kind == "cpu":
+                if jobfile is not None:
+                    auto_retry_info = await self._maybe_submit_mem_auto_retry(
+                        run, jobfile, oom_diagnosis
+                    )
+                    if auto_retry_info and auto_retry_info.get("submitted"):
+                        key_evidence.append(
+                            "CPU OOM detected; mem_auto submitted retry "
+                            f"{auto_retry_info['run_id']} with mem "
+                            f"{auto_retry_info['old_mem']} -> {auto_retry_info['new_mem']}"
+                        )
+                    elif auto_retry_info:
+                        key_evidence.append(
+                            "CPU OOM detected; mem_auto did not submit a retry "
+                            f"({auto_retry_info.get('reason', 'unknown')})"
+                        )
+                else:
+                    key_evidence.append("CPU OOM detected; no JobFile found for automatic retry")
+            elif oom_diagnosis.kind == "gpu":
+                key_evidence.append("GPU OOM detected; CPU mem_auto retry is disabled")
+
         # 6. Build observation card
         if jobfile is None:
             # Minimal synthetic jobfile for card building
@@ -638,6 +679,21 @@ class Monitor:
         # Carry per-criterion results in the card so the UI can show PASS/FAIL.
         if isinstance(card, dict):
             card["per_criterion"] = per_crit
+            if oom_diagnosis.is_oom:
+                card["oom"] = oom_diagnosis.to_dict()
+            if auto_retry_info:
+                card["auto_retry"] = auto_retry_info
+                if auto_retry_info.get("submitted"):
+                    card["recommended_next_action"] = (
+                        "Monitor auto-submitted retry "
+                        f"{auto_retry_info['run_id']} (mem "
+                        f"{auto_retry_info['old_mem']} -> {auto_retry_info['new_mem']})."
+                    )
+            elif oom_diagnosis.kind == "gpu":
+                card["recommended_next_action"] = (
+                    "GPU OOM detected. Reduce GPU memory use or request a larger GPU; "
+                    "no CPU memory retry was submitted."
+                )
 
         # 7. Persist card + expectation_match
         self.store.update_run(
@@ -681,6 +737,215 @@ class Monitor:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    async def _maybe_submit_mem_auto_retry(self, run: Run, jobfile: "JobFile", diagnosis) -> dict | None:
+        """Submit one CPU-OOM retry when the run's auto policy allows it."""
+        policy = dict(getattr(run, "auto_policy", None) or {})
+        if not policy.get("mem_auto"):
+            return None
+
+        attempt = int(getattr(run, "attempt", 1) or 1)
+        max_attempts = int(policy.get("max_attempts", 3) or 3)
+        if attempt >= max_attempts:
+            return {
+                "submitted": False,
+                "reason": "max_attempts_reached",
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+            }
+
+        existing = self.store.list_runs(parent_run_id=run.run_id)
+        if existing:
+            child = existing[0]
+            return {
+                "submitted": False,
+                "reason": "retry_already_exists",
+                "run_id": child.run_id,
+                "attempt": getattr(child, "attempt", attempt + 1),
+            }
+
+        from jobctl.memory.mem_auto import next_mem_request
+
+        request = dict(getattr(run, "slurm_request", None) or {})
+        request.pop("job_id", None)
+        old_mem = request.get("mem")
+        new_mem = next_mem_request(
+            old_mem,
+            run.resource_summary or {},
+            factor=float(policy.get("factor", 1.5) or 1.5),
+            cap=policy.get("max"),
+        )
+        if not new_mem:
+            return {
+                "submitted": False,
+                "reason": "no_larger_mem_available",
+                "old_mem": old_mem,
+                "cap": policy.get("max"),
+            }
+
+        request["mem"] = new_mem
+        child_id = f"run-{uuid.uuid4().hex[:12]}"
+        now_iso = datetime.now(timezone.utc).isoformat()
+        tags = list(getattr(run, "tags", None) or [])
+        if "mem-auto" not in tags:
+            tags.append("mem-auto")
+
+        child = Run(
+            run_id=child_id,
+            jobfile_id=run.jobfile_id,
+            jobfile_version=jobfile.version,
+            params=dict(run.params or {}),
+            input_hashes=dict(run.input_hashes or {}),
+            backend=run.backend,
+            server=run.server,
+            task=run.task,
+            remote_job_id=None,
+            state=State.PENDING,
+            health=Health.OK,
+            exit_code=None,
+            submitted_at=now_iso,
+            started_at=None,
+            finished_at=None,
+            last_heartbeat=None,
+            workdir=None,
+            stdout_path=None,
+            stderr_path=None,
+            resource_summary={},
+            expectation_match=None,
+            observation_card=None,
+            slurm_request=request,
+            title=getattr(run, "title", None),
+            note=getattr(run, "note", None),
+            tags=tags,
+            parent_run_id=run.run_id,
+            attempt=attempt + 1,
+            auto_policy=policy,
+        )
+        try:
+            self.store.add_run(child)
+        except sqlite3.IntegrityError:
+            existing = self.store.list_runs(parent_run_id=run.run_id)
+            if existing:
+                existing_child = existing[0]
+                return {
+                    "submitted": False,
+                    "reason": "retry_already_exists",
+                    "run_id": existing_child.run_id,
+                    "attempt": getattr(existing_child, "attempt", attempt + 1),
+                }
+            raise
+
+        backend = self._get_backend_for_run(run)
+        if backend is None:
+            self.store.update_run(child_id, state=State.FAILED, health=Health.WEAK)
+            return {
+                "submitted": False,
+                "reason": "backend_unavailable",
+                "run_id": child_id,
+                "old_mem": old_mem,
+                "new_mem": new_mem,
+            }
+
+        try:
+            submit_result = await asyncio.to_thread(backend.submit, child, jobfile)
+            update_fields = {
+                "state": State.SUBMITTED,
+                "remote_job_id": submit_result.remote_job_id,
+                "workdir": submit_result.workdir,
+            }
+            if submit_result.slurm_request is not None:
+                update_fields["slurm_request"] = submit_result.slurm_request
+            self.store.update_run(child_id, **update_fields)
+            self._backends[child_id] = backend
+            callback = self._callback_urls.get(run.run_id)
+            if callback:
+                self._callback_urls[child_id] = callback
+            return {
+                "submitted": True,
+                "run_id": child_id,
+                "parent_run_id": run.run_id,
+                "attempt": attempt + 1,
+                "max_attempts": max_attempts,
+                "old_mem": old_mem,
+                "new_mem": new_mem,
+                "oom_kind": diagnosis.kind,
+            }
+        except Exception as exc:
+            logger.exception("mem_auto retry submit failed for parent=%s: %s", run.run_id, exc)
+            finished_at = datetime.now(timezone.utc).isoformat()
+            failed_child = self.store.get_run(child_id) or child
+            card = build_observation_card(
+                run=failed_child,
+                jobfile=jobfile,
+                artifacts=[],
+                match=Match.FAILED,
+                key_evidence=[f"mem_auto retry submit failed: {exc}"],
+                health=Health.WEAK,
+                analyzer=self.analyzer,
+            )
+            self.store.update_run(
+                child_id,
+                state=State.FAILED,
+                health=Health.WEAK,
+                exit_code=1,
+                finished_at=finished_at,
+                expectation_match=Match.FAILED,
+                observation_card=card,
+            )
+            return {
+                "submitted": False,
+                "reason": "submit_failed",
+                "run_id": child_id,
+                "old_mem": old_mem,
+                "new_mem": new_mem,
+                "error": str(exc),
+            }
+
+    async def _check_running_gpu_oom(self, run: Run) -> bool:
+        """Cancel a still-running job if local logs already show GPU OOM."""
+        from jobctl.memory.mem_auto import classify_oom
+
+        stdout, stderr = self._read_visible_logs(run)
+        diagnosis = classify_oom({}, stdout, stderr)
+        if diagnosis.kind != "gpu":
+            return False
+
+        backend = self._get_backend_for_run(run)
+        if backend is not None:
+            try:
+                await asyncio.to_thread(backend.cancel, run)
+            except Exception as exc:
+                logger.warning("GPU OOM cancel failed for run=%s: %s", run.run_id, exc)
+
+        self.store.update_run(
+            run.run_id,
+            state=State.FAILED,
+            health=Health.RESOURCE_PRESSURE,
+            finished_at=datetime.now(timezone.utc).isoformat(),
+        )
+        terminal = self.store.get_run(run.run_id)
+        if terminal is not None:
+            await self.on_terminal(terminal)
+        return True
+
+    @staticmethod
+    def _read_visible_logs(run: Run) -> tuple[str, str]:
+        """Read stdout/stderr when they are already local; missing paths are ok."""
+        def _read(path: str | None) -> str:
+            if not path:
+                return ""
+            try:
+                return Path(path).read_text(errors="replace")
+            except OSError:
+                return ""
+
+        stdout_path = run.stdout_path
+        stderr_path = run.stderr_path
+        if not stdout_path and run.workdir:
+            stdout_path = str(Path(run.workdir) / "stdout.txt")
+        if not stderr_path and run.workdir:
+            stderr_path = str(Path(run.workdir) / "stderr.txt")
+        return _read(stdout_path), _read(stderr_path)
 
     def _get_backend_for_run(self, run: Run) -> "Backend | None":
         """Return the Backend for a run.

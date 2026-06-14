@@ -159,6 +159,18 @@ class TestRunBackground:
         assert "run_id" in data
         assert "state" in data
 
+    def test_run_background_mem_auto_flag(self, cli_env, jobfile_yaml):
+        """--mem_auto enables the persisted automatic memory policy."""
+        runner, app, ac, http_client, jf_id = cli_env
+        result = runner.invoke(
+            app,
+            ["run", "--background", "--json", "--mem_auto", "--mem-auto-attempts", "2", jf_id],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["auto_policy"]["mem_auto"] is True
+        assert data["auto_policy"]["max_attempts"] == 2
+
     def test_run_background_no_json_prints_run_id_only(self, cli_env, jobfile_yaml):
         """Without --json, run --background prints a bare run_id string."""
         runner, app, ac, http_client, jf_id = cli_env
@@ -312,6 +324,18 @@ class TestLogsCommand:
         run_id = run["run_id"]
         result = runner.invoke(app, ["logs", "--stream", "stderr", run_id])
         assert result.exit_code == 0, result.output
+
+    def test_logs_json(self, cli_env):
+        runner, app, ac, http_client, jf_id = cli_env
+        run = ac.submit(jobfile_id=jf_id, params={})
+        run_id = run["run_id"]
+        result = runner.invoke(app, ["logs", run_id, "--tail", "240", "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["run_id"] == run_id
+        assert data["stream"] == "stdout"
+        assert data["tail"] == 240
+        assert isinstance(data["text"], str)
 
 
 # ===========================================================================

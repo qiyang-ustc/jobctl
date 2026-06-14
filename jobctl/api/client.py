@@ -99,6 +99,7 @@ class ApiClient:
         title: str | None = None,
         note: str | None = None,
         tags: list[str] | None = None,
+        auto_policy: dict | None = None,
     ) -> dict:
         """Submit a new run; returns the run dict (includes memory_hint).
 
@@ -111,6 +112,8 @@ class ApiClient:
                       applied on top of per-server config for slurm submits.
         title/note/tags: human-readable identity — what this run is *for*. Shown
                       in the CLI and the web panel instead of a bare hash.
+        auto_policy: automatic recovery policy, currently supports
+                      {"mem_auto": true, "factor": 1.5, "max_attempts": 3}.
         """
         body: dict = {"params": params or {}}
         if jobfile_id:
@@ -131,6 +134,8 @@ class ApiClient:
             body["note"] = note
         if tags:
             body["tags"] = tags
+        if auto_policy:
+            body["auto_policy"] = auto_policy
         resp = self._post("/runs", json=body)
         self._raise_for(resp, "submit")
         return resp.json()
