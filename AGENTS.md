@@ -33,5 +33,10 @@ Open follow-up requirements:
 
 When debugging jobctl itself, inspect `~/.jobctl/cli.log` and
 `~/.jobctl/daemon.log` before guessing. If jobctl misreports state, marks a run
-stuck incorrectly, crashes, or fails to persist the terminal observation card,
-use `jobctl report-bug "<what went wrong>" --run <run_id>` when a run id exists.
+stuck incorrectly, crashes, fails to persist the terminal observation card, or
+otherwise behaves differently from the documented contract, agents must file a
+bug report with diagnostics instead of only mentioning it in chat:
+`jobctl --report-bug "<what went wrong>" --report-run <run_id>`. The subcommand
+form `jobctl report-bug "<what went wrong>" --run <run_id>` is equivalent. If no
+run id exists, omit the run flag. If the agent fixes the bug in the same turn,
+the PR/commit is the tracking record and should be reported explicitly.

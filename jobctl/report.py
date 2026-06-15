@@ -2,6 +2,7 @@
 
 Lets an agent (or a human) file a jobctl bug straight from the CLI:
 
+    jobctl --report-bug "monitor marked my running job stuck" --report-run run-abc123
     jobctl report-bug "monitor marked my running job stuck" --run run-abc123
 
 It bundles diagnostics (version, platform, log tails, the run record, recent
@@ -14,6 +15,8 @@ import platform
 import shutil
 import subprocess
 import sys
+import tempfile
+from datetime import datetime
 from pathlib import Path
 
 REPO = "qiyang-ustc/jobctl"
@@ -43,8 +46,11 @@ def build_report(
 ) -> str:
     """Assemble a Markdown bug report body."""
     if log_dir is None:
-        from jobctl import logsetup
-        log_dir = logsetup.log_dir()
+        try:
+            from jobctl import logsetup
+            log_dir = logsetup.log_dir()
+        except OSError:
+            log_dir = Path(tempfile.gettempdir()) / "jobctl"
     log_dir = Path(log_dir)
 
     out: list[str] = [f"## What happened\n\n{description}\n", "## Environment"]
@@ -72,6 +78,33 @@ def build_report(
     out.append("## cli.log (tail)\n```\n" + _tail(log_dir / "cli.log") + "\n```")
     out.append("\n_Filed via `jobctl report-bug`._")
     return "\n".join(out)
+
+
+def save_local_report(title: str, body: str, *, log_root: Path | None = None) -> Path:
+    """Save a bug report locally, falling back to temp when state root is denied."""
+    candidates: list[Path] = []
+    if log_root is not None:
+        candidates.append(Path(log_root) / "issues")
+    else:
+        try:
+            from jobctl import logsetup
+            candidates.append(logsetup.log_dir() / "issues")
+        except OSError:
+            pass
+    candidates.append(Path(tempfile.gettempdir()) / "jobctl-issues")
+
+    last_error: OSError | None = None
+    for issues_dir in candidates:
+        try:
+            issues_dir.mkdir(parents=True, exist_ok=True)
+            path = issues_dir / f"bug-{datetime.now().strftime('%Y%m%dT%H%M%S')}.md"
+            path.write_text(f"# {title}\n\n{body}\n")
+            return path
+        except OSError as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise OSError("no local report paths available")
 
 
 def _gh_runner(repo: str, title: str, body: str) -> str:

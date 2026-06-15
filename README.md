@@ -116,6 +116,13 @@ tails, the run record, and recent failures, then opens a GitHub issue:
 jobctl report-bug "monitor marked my running job stuck" --run <run_id>
 ```
 
+Agents can use the top-level shortcut when jobctl behaves unexpectedly and they
+need to file the bug before doing anything else:
+
+```bash
+jobctl --report-bug "monitor marked my running job stuck" --report-run <run_id>
+```
+
 Run dirs are mirrored under the configured `run_dir`; `jobctl gc` clears ones
 with no DB record (`--dry-run` to preview).
 

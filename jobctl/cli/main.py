@@ -45,6 +45,25 @@ def _get_client():
     return ApiClient(base_url=base_url)
 
 
+def _get_existing_client():
+    """Return an ApiClient without auto-starting the daemon."""
+    if _OVERRIDE_CLIENT is not None:
+        return _OVERRIDE_CLIENT
+
+    from jobctl.api.client import ApiClient
+
+    try:
+        from jobctl.config import load_config
+
+        cfg = load_config()
+        host = cfg.daemon_host
+        port = cfg.daemon_port
+    except Exception:
+        host = "127.0.0.1"
+        port = 7421
+    return ApiClient(base_url=f"http://{host}:{port}")
+
+
 # ---------------------------------------------------------------------------
 # Output helpers
 # ---------------------------------------------------------------------------
@@ -86,6 +105,7 @@ def _print_table(rows: list[dict], columns: list[str]):
 app = typer.Typer(
     help="jobctl — JobFile-native research run gateway.",
     no_args_is_help=True,
+    invoke_without_command=True,
 )
 
 # Sub-groups
@@ -97,18 +117,49 @@ app.add_typer(expect_app, name="expect")
 
 
 @app.callback()
-def _main(ctx: typer.Context):
+def _main(
+    ctx: typer.Context,
+    report_bug_description: Annotated[
+        Optional[str],
+        typer.Option(
+            "--report-bug",
+            help="Report a jobctl bug immediately and exit",
+        ),
+    ] = None,
+    report_bug_run_id: Annotated[
+        Optional[str],
+        typer.Option(
+            "--report-run",
+            help="Related run id for --report-bug",
+        ),
+    ] = None,
+    report_bug_submit: Annotated[
+        bool,
+        typer.Option(
+            "--report-submit/--report-no-submit",
+            help="File a GitHub issue for --report-bug",
+        ),
+    ] = True,
+):
     """Log every jobctl invocation so all calls leave a trail in ~/.jobctl/cli.log."""
     # Skip the heavy log setup for `serve` (it configures its own 'daemon' log).
-    if ctx.invoked_subcommand == "serve":
-        return
-    try:
-        from jobctl.logsetup import configure_logging
-        import logging as _logging
-        configure_logging("cli")
-        _logging.getLogger("jobctl.cli").info("invoke: %s", " ".join(sys.argv[1:]) or "(no args)")
-    except Exception:
-        pass  # logging must never break a command
+    if ctx.invoked_subcommand != "serve":
+        try:
+            from jobctl.logsetup import configure_logging
+            import logging as _logging
+            configure_logging("cli")
+            _logging.getLogger("jobctl.cli").info("invoke: %s", " ".join(sys.argv[1:]) or "(no args)")
+        except Exception:
+            pass  # logging must never break a command
+
+    if report_bug_description:
+        _handle_report_bug(
+            report_bug_description,
+            run_id=report_bug_run_id,
+            submit=report_bug_submit,
+            json_out=False,
+        )
+        raise typer.Exit()
 
 
 _TERMINAL_STATES = {"completed", "failed", "cancelled", "stuck", "timeout"}
@@ -503,19 +554,15 @@ def servers(
 # report-bug
 # ---------------------------------------------------------------------------
 
-@app.command(name="report-bug")
-def report_bug(
-    description: Annotated[str, typer.Argument(help="What went wrong, in one line")],
-    run_id: Annotated[Optional[str], typer.Option("--run", help="Related run id")] = None,
-    submit: Annotated[bool, typer.Option("--submit/--no-submit", help="File a GitHub issue")] = True,
-    json_out: Annotated[bool, typer.Option("--json", help="Output JSON")] = False,
-):
-    """Report a jobctl bug: bundles diagnostics (version, log tails, the run
-    record, recent failures) and opens a GitHub issue on the jobctl repo so the
-    maintainer can fix it. Falls back to a local file if GitHub is unreachable."""
-    from datetime import datetime
+def _handle_report_bug(
+    description: str,
+    *,
+    run_id: str | None = None,
+    submit: bool = True,
+    json_out: bool = False,
+) -> None:
+    """Bundle and submit diagnostics for a jobctl bug."""
     from jobctl import report as _report
-    from jobctl.logsetup import log_dir
 
     try:
         from importlib.metadata import version as _pkg_version
@@ -527,7 +574,7 @@ def report_bug(
     run = None
     recent = None
     try:
-        client = _get_client()
+        client = _get_existing_client()
         if run_id:
             run = client.get_run(run_id)
         runs = client.list_runs()
@@ -542,10 +589,7 @@ def report_bug(
     if url:
         result = {"submitted": True, "issue_url": url}
     else:
-        issues_dir = log_dir() / "issues"
-        issues_dir.mkdir(parents=True, exist_ok=True)
-        path = issues_dir / f"bug-{datetime.now().strftime('%Y%m%dT%H%M%S')}.md"
-        path.write_text(f"# {title}\n\n{body}\n")
+        path = _report.save_local_report(title, body)
         result = {
             "submitted": False,
             "saved_to": str(path),
@@ -559,6 +603,19 @@ def report_bug(
     else:
         typer.echo(f"Could not file to GitHub; saved report to {result['saved_to']}")
         typer.echo(f"  file it manually: {result['manual']}")
+
+
+@app.command(name="report-bug")
+def report_bug(
+    description: Annotated[str, typer.Argument(help="What went wrong, in one line")],
+    run_id: Annotated[Optional[str], typer.Option("--run", help="Related run id")] = None,
+    submit: Annotated[bool, typer.Option("--submit/--no-submit", help="File a GitHub issue")] = True,
+    json_out: Annotated[bool, typer.Option("--json", help="Output JSON")] = False,
+):
+    """Report a jobctl bug: bundles diagnostics (version, log tails, the run
+    record, recent failures) and opens a GitHub issue on the jobctl repo so the
+    maintainer can fix it. Falls back to a local file if GitHub is unreachable."""
+    _handle_report_bug(description, run_id=run_id, submit=submit, json_out=json_out)
 
 
 # ---------------------------------------------------------------------------
