@@ -344,8 +344,14 @@ def ensure_daemon(
         _log_fh = open(daemon_log, "a", buffering=1)
     except OSError as exc:
         fallback_log = f"{tempfile.gettempdir()}/jobctl-daemon.log"
-        logger.warning("daemon log %s is not writable (%s); using %s", daemon_log, exc, fallback_log)
+        logger.debug("daemon log %s is not writable (%s); using %s", daemon_log, exc, fallback_log)
         _log_fh = open(fallback_log, "a", buffering=1)
+        print(
+            f"jobctl daemon log fallback: {daemon_log} is not writable ({exc}); "
+            f"using {fallback_log}",
+            file=_log_fh,
+            flush=True,
+        )
     subprocess.Popen(
         [
             sys.executable, "-m", "jobctl.cli.main", "serve",

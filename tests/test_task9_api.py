@@ -11,6 +11,8 @@ Strategy:
 from __future__ import annotations
 
 import asyncio
+import builtins
+import logging
 import os
 import tempfile
 import time
@@ -724,3 +726,55 @@ class TestEnsureDaemon:
                 )
                 assert url == "http://127.0.0.1:7421"
                 mock_popen.assert_called_once()
+
+    def test_ensure_daemon_log_fallback_is_not_user_visible(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Sandbox log fallback should stay diagnostic, not user-facing warning noise."""
+        from jobctl.api.client import ensure_daemon
+        import httpx
+
+        daemon_log = tmp_path / "blocked" / "daemon.log"
+        fallback_dir = tmp_path / "fallback"
+        fallback_dir.mkdir()
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(fallback_dir))
+
+        mock_ok = MagicMock()
+        mock_ok.status_code = 200
+
+        call_count = 0
+
+        def mock_get(url, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise httpx.ConnectError("Connection refused")
+            return mock_ok
+
+        real_open = builtins.open
+
+        def fake_open(path, *args, **kwargs):
+            if Path(path) == daemon_log:
+                raise OSError("sandbox denied")
+            return real_open(path, *args, **kwargs)
+
+        caplog.set_level(logging.WARNING)
+        with patch("jobctl.logsetup.log_path", return_value=daemon_log):
+            with patch("builtins.open", side_effect=fake_open):
+                with patch("httpx.get", side_effect=mock_get):
+                    with patch("subprocess.Popen") as mock_popen:
+                        mock_popen.return_value = MagicMock()
+                        url = ensure_daemon(
+                            config={"daemon_host": "127.0.0.1", "daemon_port": 7421},
+                            wait_timeout=2,
+                        )
+
+        assert url == "http://127.0.0.1:7421"
+        mock_popen.assert_called_once()
+        assert "daemon log" not in caplog.text
+
+        fallback_log = fallback_dir / "jobctl-daemon.log"
+        assert fallback_log.exists()
+        fallback_text = fallback_log.read_text()
+        assert "jobctl daemon log fallback" in fallback_text
+        assert str(daemon_log) in fallback_text
