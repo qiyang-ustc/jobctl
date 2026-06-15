@@ -1,6 +1,8 @@
 """Bug-report assembly + issue submission (the 'submit issue to you' channel)."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from jobctl import report
 
 
@@ -37,3 +39,23 @@ def test_submit_issue_returns_none_on_failure():
     def boom(repo, title, body):
         raise RuntimeError("gh not authed")
     assert report.submit_issue("t", "b", runner=boom) is None
+
+
+def test_save_local_report_falls_back_to_temp_when_state_root_denied(tmp_path, monkeypatch):
+    blocked_root = tmp_path / "blocked"
+    fallback_root = tmp_path / "fallback"
+    monkeypatch.setattr(report.tempfile, "gettempdir", lambda: str(fallback_root))
+
+    real_write_text = Path.write_text
+
+    def fake_write_text(path, *args, **kwargs):
+        if str(path).startswith(str(blocked_root)):
+            raise OSError("sandbox denied")
+        return real_write_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fake_write_text)
+
+    path = report.save_local_report("[bug] x", "body", log_root=blocked_root)
+
+    assert path.parent == fallback_root / "jobctl-issues"
+    assert "body" in path.read_text()

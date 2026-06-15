@@ -1,6 +1,6 @@
 ---
 name: jobctl-followups
-description: Use when working on jobctl product follow-ups: UI redesign/readability, Codex or subagent state-path writes under ~/.jobctl, default server scheduling policies such as oblix 5% idle CPU capacity, fixing monitor/inspect completion behavior, or resolving job visibility mismatches where running views miss jobs that server status can see.
+description: Use when working on jobctl product follow-ups: UI redesign/readability, Codex or subagent state-path writes under ~/.jobctl, default server scheduling policies such as oblix 5% idle CPU capacity, fixing monitor/inspect completion behavior, resolving job visibility mismatches where running views miss jobs that server status can see, or enforcing bug-report submission after unexpected jobctl behavior.
 ---
 
 # jobctl Follow-Ups
@@ -72,6 +72,30 @@ Relevant files usually include:
 - `jobctl/db/store.py`
 - `tests/test_task1_foundation.py`
 - `tests/test_e2e_local.py`
+
+## Bug Reporting Contract
+
+When jobctl itself behaves unexpectedly, file a diagnostic bug report after
+checking `~/.jobctl/cli.log` and `~/.jobctl/daemon.log`. This is required for
+state mismatches, false stuck/running/completed states, missing observation
+cards, crashes, broken JSON output, UI/API visibility mismatches, or sandbox
+state-root failures.
+
+Use the top-level shortcut:
+
+```bash
+jobctl --report-bug "<what went wrong>" --report-run <run_id>
+```
+
+The subcommand form is equivalent:
+
+```bash
+jobctl report-bug "<what went wrong>" --run <run_id>
+```
+
+Omit the run flag when no run id exists. If you directly fix and merge the
+jobctl bug in the same turn, report the PR or commit instead of filing a
+separate issue.
 
 ## Default Scheduling Policy
 

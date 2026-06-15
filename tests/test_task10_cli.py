@@ -128,6 +128,50 @@ def _wait_terminal(http_client, run_id, timeout=15.0):
 
 
 # ===========================================================================
+# Tests: top-level report-bug shortcut
+# ===========================================================================
+
+class TestReportBugShortcut:
+    def test_top_level_report_bug_shortcut_saves_report(self, tmp_path, monkeypatch):
+        from jobctl.cli import main as cli_module
+        from jobctl.cli.main import app
+
+        home = tmp_path / "jobctl-home"
+        monkeypatch.setenv("JOBCTL_HOME", str(home))
+
+        class BrokenClient:
+            def get_run(self, run_id):
+                raise RuntimeError("daemon unavailable")
+
+            def list_runs(self):
+                raise RuntimeError("daemon unavailable")
+
+        cli_module._OVERRIDE_CLIENT = BrokenClient()
+        try:
+            result = CliRunner().invoke(
+                app,
+                [
+                    "--report-bug",
+                    "daemon marked a completed run as running",
+                    "--report-run",
+                    "run-test",
+                    "--report-no-submit",
+                ],
+            )
+        finally:
+            cli_module._OVERRIDE_CLIENT = None
+
+        assert result.exit_code == 0, result.output
+        assert "Could not file to GitHub; saved report to" in result.output
+
+        reports = list((home / "issues").glob("bug-*.md"))
+        assert len(reports) == 1
+        body = reports[0].read_text()
+        assert "daemon marked a completed run as running" in body
+        assert "Filed via `jobctl report-bug`" in body
+
+
+# ===========================================================================
 # Tests: run --background
 # ===========================================================================
 
