@@ -171,6 +171,31 @@ class TestReportBugShortcut:
         assert "Filed via `jobctl report-bug`" in body
 
 
+class TestCliApiErrors:
+    def test_daemon_connection_error_is_concise(self):
+        from jobctl.api.client import JobctlApiError
+        from jobctl.cli import main as cli_module
+        from jobctl.cli.main import app
+
+        class BlockedClient:
+            def servers(self):
+                raise JobctlApiError(
+                    "could not connect to the jobctl daemon at http://127.0.0.1:7421: "
+                    "local sandbox or OS permissions blocked the connection."
+                )
+
+        cli_module._OVERRIDE_CLIENT = BlockedClient()
+        try:
+            result = CliRunner().invoke(app, ["servers", "--json"])
+        finally:
+            cli_module._OVERRIDE_CLIENT = None
+
+        assert result.exit_code == 1
+        assert "could not connect to the jobctl daemon" in result.output
+        assert "Traceback" not in result.output
+        assert "jobctl/api/client.py" not in result.output
+
+
 # ===========================================================================
 # Tests: run --background
 # ===========================================================================

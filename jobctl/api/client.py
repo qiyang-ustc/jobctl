@@ -14,6 +14,7 @@ import tempfile
 import time
 from typing import Any
 
+import click
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,24 @@ logger = logging.getLogger(__name__)
 _TERMINAL_STATES = {"completed", "failed", "cancelled", "stuck", "timeout"}
 _DEFAULT_POLL_INTERVAL = 1.0
 _DEFAULT_TIMEOUT = 600.0
+
+
+class JobctlApiError(click.ClickException):
+    """User-facing API/daemon connection error for CLI calls."""
+
+
+def _api_connection_message(base_url: str, exc: httpx.RequestError) -> str:
+    message = str(exc) or exc.__class__.__name__
+    if "Operation not permitted" in message or "Permission denied" in message:
+        return (
+            f"could not connect to the jobctl daemon at {base_url}: local sandbox "
+            "or OS permissions blocked the connection. Retry outside the sandbox "
+            "or allow local daemon access."
+        )
+    return (
+        f"could not connect to the jobctl daemon at {base_url}: {message}. "
+        "Run `jobctl serve` or check ~/.jobctl/daemon.log."
+    )
 
 
 class ApiClient:
@@ -44,13 +63,19 @@ class ApiClient:
         if self._transport is not None:
             # Use TestClient directly
             return self._transport.get(url, **kwargs)
-        return httpx.get(url, **kwargs)
+        try:
+            return httpx.get(url, **kwargs)
+        except httpx.RequestError as exc:
+            raise JobctlApiError(_api_connection_message(self.base_url, exc)) from exc
 
     def _post(self, path: str, json: dict | None = None, **kwargs) -> httpx.Response:
         url = f"{self.base_url}{path}"
         if self._transport is not None:
             return self._transport.post(url, json=json, **kwargs)
-        return httpx.post(url, json=json, **kwargs)
+        try:
+            return httpx.post(url, json=json, **kwargs)
+        except httpx.RequestError as exc:
+            raise JobctlApiError(_api_connection_message(self.base_url, exc)) from exc
 
     def _raise_for(self, resp: httpx.Response, context: str = "") -> None:
         if resp.status_code >= 400:
@@ -374,5 +399,5 @@ def ensure_daemon(
         except Exception:
             pass
 
-    logger.warning("Daemon did not come up within %ss", wait_timeout)
+    logger.debug("Daemon did not come up within %ss", wait_timeout)
     return base_url
