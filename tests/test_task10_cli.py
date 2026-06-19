@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import time
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -28,6 +29,10 @@ def _make_api_client(http_client):
     """Wrap a TestClient in an ApiClient."""
     from jobctl.api.client import ApiClient
     return ApiClient(base_url="http://testserver", transport=http_client)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 @pytest.fixture
@@ -494,6 +499,79 @@ class TestServersCommand:
         assert result.exit_code == 0, result.output
         # Output can be empty table or header
         assert isinstance(result.output, str)
+
+
+class TestRunningCommand:
+    def test_running_json_includes_managed_and_scheduler_only_jobs(self, cli_env):
+        from jobctl.db.models import Health, Run, Server, State
+
+        runner, app, ac, http_client, jf_id = cli_env
+        store = http_client.app.state.store
+        now = _now_iso()
+        run = Run(
+            run_id="run-active001",
+            jobfile_id=jf_id,
+            jobfile_version=1,
+            params={},
+            input_hashes={},
+            backend="slurm",
+            server="oblix",
+            task=None,
+            remote_job_id="317604",
+            state=State.RUNNING,
+            health=Health.OK,
+            exit_code=None,
+            submitted_at=now,
+            started_at=now,
+            finished_at=None,
+            last_heartbeat=now,
+            workdir=None,
+            stdout_path=None,
+            stderr_path=None,
+            resource_summary={},
+            expectation_match=None,
+            observation_card=None,
+            slurm_request={"job_id": "317604"},
+            title="active test run",
+        )
+        store.add_run(run)
+        store.upsert_server(
+            Server(
+                name="oblix",
+                backend_type="slurm",
+                online=True,
+                last_heartbeat=now,
+                cpu={},
+                mem={},
+                gpu={},
+                disk={},
+                slurm_queue={
+                    "running": 2,
+                    "pending": 0,
+                    "jobs": [
+                        {"job_id": "317604", "state": "R", "name": "run-active001"},
+                        {"job_id": "999999", "state": "R", "name": "external-job"},
+                    ],
+                },
+                note=None,
+            )
+        )
+
+        result = runner.invoke(app, ["running", "--json"])
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["counts"]["runs"] == 1
+        assert data["runs"][0]["run_id"] == "run-active001"
+        assert data["counts"]["cluster_jobs"] == 2
+        assert data["counts"]["scheduler_only_jobs"] == 1
+        assert data["scheduler_only_jobs"][0]["name"] == "external-job"
+
+    def test_running_human_empty_state(self, cli_env):
+        runner, app, ac, http_client, jf_id = cli_env
+        result = runner.invoke(app, ["running"])
+        assert result.exit_code == 0, result.output
+        assert "jobctl-managed active runs" in result.output or "(no jobctl-managed active runs)" in result.output
 
 
 # ===========================================================================

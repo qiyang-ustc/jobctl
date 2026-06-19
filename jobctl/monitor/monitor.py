@@ -69,6 +69,11 @@ _TERMINAL_STATES = {
 _POLLABLE_STATES = {State.SUBMITTED, State.RUNNING, State.STUCK}
 
 
+def _exception_summary(exc: BaseException) -> str:
+    message = str(exc)
+    return f"{exc.__class__.__name__}: {message}" if message else exc.__class__.__name__
+
+
 # ---------------------------------------------------------------------------
 # build_observation_card — module-level function (also used by other layers)
 # ---------------------------------------------------------------------------
@@ -388,7 +393,10 @@ class Monitor:
                 )
             except (asyncio.TimeoutError, Exception) as exc:
                 logger.warning(
-                    "poll_many failed/timed out for %s/%s: %s", _bname, _server, exc
+                    "poll_many failed/timed out for %s/%s: %s",
+                    _bname,
+                    _server,
+                    _exception_summary(exc),
                 )
                 for run in group:
                     self.store.update_run(run.run_id, health=Health.NO_HEARTBEAT)
@@ -415,7 +423,11 @@ class Monitor:
                 timeout=self._poll_call_timeout,
             )
         except (asyncio.TimeoutError, Exception) as exc:
-            logger.warning("poll failed/timed out for run=%s: %s", run.run_id, exc)
+            logger.warning(
+                "poll failed/timed out for run=%s: %s",
+                run.run_id,
+                _exception_summary(exc),
+            )
             self.store.update_run(run.run_id, health=Health.NO_HEARTBEAT)
             return
         await self._apply_poll(run, poll)
@@ -642,6 +654,8 @@ class Monitor:
                             "CPU OOM detected; mem_auto did not submit a retry "
                             f"({auto_retry_info.get('reason', 'unknown')})"
                         )
+                    else:
+                        key_evidence.append("CPU OOM detected; mem_auto is not enabled")
                 else:
                     key_evidence.append("CPU OOM detected; no JobFile found for automatic retry")
             elif oom_diagnosis.kind == "gpu":
@@ -689,6 +703,11 @@ class Monitor:
                         f"{auto_retry_info['run_id']} (mem "
                         f"{auto_retry_info['old_mem']} -> {auto_retry_info['new_mem']})."
                     )
+            elif oom_diagnosis.kind == "cpu":
+                card["recommended_next_action"] = (
+                    "CPU OOM detected. Rerun with a larger --mem or enable "
+                    "--mem-auto so jobctl can submit a conservative retry."
+                )
             elif oom_diagnosis.kind == "gpu":
                 card["recommended_next_action"] = (
                     "GPU OOM detected. Reduce GPU memory use or request a larger GPU; "
