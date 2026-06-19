@@ -208,6 +208,15 @@ class TestEvaluateExitCode:
         match, evidence, per_criterion = evaluate(contract, run, [], "", "")
         assert match == Match.FAILED
 
+    def test_backend_failure_with_zero_exit_code_reports_state_not_success(self) -> None:
+        """Scheduler-level failures can have ExitCode=0:0; evidence must not imply success."""
+        run = _make_run(exit_code=0, state=State.FAILED)
+        contract = _make_contract([])
+        match, evidence, per_criterion = evaluate(contract, run, [], "", "")
+        assert match == Match.FAILED
+        assert "Run state=failed" in evidence
+        assert "Run exit_code=0" not in evidence
+
 
 # ===========================================================================
 # evaluate() tests — absence criteria

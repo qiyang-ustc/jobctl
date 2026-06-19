@@ -679,6 +679,24 @@ class TestApiClient:
         arts = ac.artifacts(run_id)
         assert isinstance(arts, list)
 
+    def test_connection_error_is_user_facing(self, monkeypatch):
+        from jobctl.api.client import ApiClient, JobctlApiError
+        import httpx
+
+        def blocked(*args, **kwargs):
+            raise httpx.ConnectError("[Errno 1] Operation not permitted")
+
+        monkeypatch.setattr(httpx, "get", blocked)
+        ac = ApiClient(base_url="http://127.0.0.1:7421")
+
+        with pytest.raises(JobctlApiError) as excinfo:
+            ac.servers()
+
+        message = str(excinfo.value)
+        assert "could not connect to the jobctl daemon" in message
+        assert "sandbox" in message
+        assert "Traceback" not in message
+
 
 # ---------------------------------------------------------------------------
 # ensure_daemon — unit test (no real process spawning)

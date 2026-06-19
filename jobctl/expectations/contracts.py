@@ -418,7 +418,11 @@ def evaluate(
     exit_code = run.exit_code
 
     if (exit_code is not None and exit_code != 0) or state_str == "failed":
-        exit_str = f"exit_code={exit_code}" if exit_code is not None else "state=failed"
+        exit_str = (
+            f"exit_code={exit_code}"
+            if exit_code is not None and exit_code != 0
+            else "state=failed"
+        )
         key_evidence.append(f"Run {exit_str}")
         return Match.FAILED, key_evidence, per_criterion
 

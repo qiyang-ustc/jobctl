@@ -565,6 +565,36 @@ class TestPollRuns:
         }
         assert required.issubset(card.keys()), f"Missing: {required - card.keys()}"
 
+    def test_poll_many_blank_timeout_logs_exception_class(self, tmp_path, caplog):
+        """TimeoutError() has no message; monitor logs must still show a reason."""
+        poll_sequence = [
+            PollResult(state=State.RUNNING, resource={}, last_log_mtime=time.time()),
+        ]
+        collect = CollectResult(
+            exit_code=None,
+            stdout_path=str(tmp_path / "stdout.txt"),
+            stderr_path=str(tmp_path / "stderr.txt"),
+            artifact_dir=str(tmp_path),
+        )
+        store, jf, run, backend, notifier, monitor = self._setup(
+            tmp_path, poll_sequence, collect
+        )
+        run.backend = "slurm"
+        run.server = "oblix"
+        store.update_run(run.run_id, backend="slurm", server="oblix")
+
+        def raise_blank_timeout(group):
+            raise TimeoutError()
+
+        backend.poll_many = raise_blank_timeout
+        caplog.set_level("WARNING", logger="jobctl.monitor.monitor")
+
+        asyncio.run(monitor.poll_runs())
+
+        assert "poll_many failed/timed out for slurm/oblix: TimeoutError" in caplog.text
+        stored = store.get_run(run.run_id)
+        assert stored.health == Health.NO_HEARTBEAT
+
 
 # ===========================================================================
 # Tests: mem-auto OOM handling
@@ -572,7 +602,14 @@ class TestPollRuns:
 
 class TestMemAutoOom:
 
-    def _monitor_for_slurm_failure(self, tmp_path, *, stderr_text="", resource_summary=None):
+    def _monitor_for_slurm_failure(
+        self,
+        tmp_path,
+        *,
+        stderr_text="",
+        resource_summary=None,
+        auto_policy=None,
+    ):
         Monitor, _ = _import_monitor()
 
         store = _make_store(tmp_path)
@@ -592,7 +629,9 @@ class TestMemAutoOom:
         run.stdout_path = str(stdout_file)
         run.stderr_path = str(stderr_file)
         run.slurm_request = {"mem": "1G", "cpus": 1, "time": "01:00:00", "job_id": "123"}
-        run.auto_policy = {"mem_auto": True, "factor": 1.5, "max_attempts": 3}
+        if auto_policy is None:
+            auto_policy = {"mem_auto": True, "factor": 1.5, "max_attempts": 3}
+        run.auto_policy = auto_policy
         store.add_run(run)
 
         collect = CollectResult(
@@ -652,6 +691,23 @@ class TestMemAutoOom:
         assert "auto_retry" not in parent.observation_card
         assert store.list_runs(parent_run_id=run.run_id) == []
         assert parent.health == Health.RESOURCE_PRESSURE
+
+    def test_cpu_oom_without_mem_auto_recommends_larger_memory(self, tmp_path):
+        store, run, backend, notifier, monitor = self._monitor_for_slurm_failure(
+            tmp_path,
+            resource_summary={"State": "OUT_OF_MEMORY", "MaxRSS": "900M"},
+            auto_policy={},
+        )
+
+        asyncio.run(monitor.poll_runs())
+
+        parent = store.get_run(run.run_id)
+        card = parent.observation_card
+        assert card["oom"]["kind"] == "cpu"
+        assert "auto_retry" not in card
+        assert "CPU OOM detected; mem_auto is not enabled" in card["key_evidence"]
+        assert "larger --mem" in card["recommended_next_action"]
+        assert store.list_runs(parent_run_id=run.run_id) == []
 
     def test_running_gpu_oom_log_is_cancelled_and_notified(self, tmp_path):
         Monitor, _ = _import_monitor()

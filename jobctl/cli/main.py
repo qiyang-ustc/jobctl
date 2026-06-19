@@ -9,6 +9,7 @@ Commands:
     inspect     Print the full run record.
     cancel      Cancel a run.
     rerun       Create a copy of a run and re-submit it.
+    running     List active jobctl runs plus scheduler-only active jobs.
     servers     List server health rows.
     memory      Sub-group: memory query.
     register    Register a JobFile path with the daemon.
@@ -163,6 +164,7 @@ def _main(
 
 
 _TERMINAL_STATES = {"completed", "failed", "cancelled", "stuck", "timeout"}
+_ACTIVE_STATES = {"pending", "submitted", "running", "stuck"}
 
 # How long `run --wait` / `await` block before giving up (12 hours) — long
 # enough for real cluster jobs; override with --timeout.
@@ -185,6 +187,48 @@ _EXIT_FOR_STATE = {
 def _exit_code_for(state) -> int:
     """Map a terminal run state to a process exit code (unknown -> 1)."""
     return _EXIT_FOR_STATE.get(str(state), 1)
+
+
+def _cluster_jobs_from_servers(servers: list[dict], states: set[str]) -> list[dict]:
+    jobs: list[dict] = []
+    for server in servers:
+        server_name = server.get("name")
+        for job in ((server.get("slurm_queue") or {}).get("jobs") or []):
+            state = str(job.get("state", "")).upper()
+            if state not in states:
+                continue
+            item = dict(job)
+            item["server"] = server_name
+            item["state"] = state
+            jobs.append(item)
+    return jobs
+
+
+def _running_snapshot(client) -> dict:
+    runs = client.list_runs()
+    active = [r for r in runs if str(r.get("state")) in _ACTIVE_STATES]
+    active_ids = {str(r.get("run_id")) for r in active}
+
+    servers = client.servers()
+    cluster_jobs = _cluster_jobs_from_servers(servers, {"R", "PD"})
+    scheduler_only: list[dict] = []
+    for job in cluster_jobs:
+        name = str(job.get("name") or "")
+        item = dict(job)
+        item["managed"] = name in active_ids
+        if not item["managed"]:
+            scheduler_only.append(item)
+
+    return {
+        "runs": active,
+        "scheduler_only_jobs": scheduler_only,
+        "cluster_jobs": cluster_jobs,
+        "counts": {
+            "runs": len(active),
+            "scheduler_only_jobs": len(scheduler_only),
+            "cluster_jobs": len(cluster_jobs),
+        },
+    }
 
 # ---------------------------------------------------------------------------
 # run
@@ -427,6 +471,65 @@ def status(
         typer.echo(f"state:   {state}")
         typer.echo(f"health:  {health}")
         typer.echo(f"backend: {run.get('backend')}  server: {run.get('server')}")
+
+
+# ---------------------------------------------------------------------------
+# running
+# ---------------------------------------------------------------------------
+
+@app.command()
+def running(
+    json_out: Annotated[bool, typer.Option("--json", help="Output JSON")] = False,
+):
+    """List active jobctl runs and scheduler-visible active jobs."""
+    client = _get_client()
+    snapshot = _running_snapshot(client)
+
+    if json_out:
+        _print_json(snapshot)
+        return
+
+    runs = snapshot["runs"]
+    scheduler_only = snapshot["scheduler_only_jobs"]
+    if runs:
+        typer.echo("jobctl-managed active runs")
+        _print_table(
+            [
+                {
+                    "run_id": r.get("run_id", ""),
+                    "state": r.get("state", ""),
+                    "health": r.get("health", ""),
+                    "backend": r.get("backend", ""),
+                    "server": r.get("server", ""),
+                    "remote_job_id": r.get("remote_job_id", ""),
+                    "title": r.get("display_title") or r.get("title") or "",
+                }
+                for r in runs
+            ],
+            ["run_id", "state", "health", "backend", "server", "remote_job_id", "title"],
+        )
+    else:
+        typer.echo("(no jobctl-managed active runs)")
+
+    if scheduler_only:
+        typer.echo("")
+        typer.echo("scheduler-only active jobs")
+        _print_table(
+            [
+                {
+                    "server": j.get("server", ""),
+                    "job_id": j.get("job_id", ""),
+                    "state": j.get("state", ""),
+                    "name": j.get("name", ""),
+                    "elapsed": j.get("elapsed", ""),
+                    "time_left": j.get("time_left", ""),
+                    "cpus": j.get("cpus", ""),
+                    "where": j.get("where", ""),
+                }
+                for j in scheduler_only
+            ],
+            ["server", "job_id", "state", "name", "elapsed", "time_left", "cpus", "where"],
+        )
 
 
 # ---------------------------------------------------------------------------
