@@ -252,6 +252,7 @@ def run(
     mem_auto_max: Annotated[Optional[str], typer.Option("--mem-auto-max", help="Maximum SLURM memory for --mem-auto retries (e.g. 64G)")] = None,
     mem_auto_attempts: Annotated[int, typer.Option("--mem-auto-attempts", help="Total attempts including the original run")] = 3,
     cpus: Annotated[Optional[int], typer.Option("--cpus", help="SLURM cpus-per-task")] = None,
+    gres: Annotated[Optional[str], typer.Option("--gres", help="SLURM generic resources (e.g. gpu:mi300a:1)")] = None,
     time_limit: Annotated[Optional[str], typer.Option("--time", help="SLURM time limit (e.g. 00:11:00)")] = None,
     partition: Annotated[Optional[str], typer.Option("--partition", help="SLURM partition")] = None,
     account: Annotated[Optional[str], typer.Option("--account", help="SLURM account")] = None,
@@ -261,7 +262,7 @@ def run(
     """Submit a job. --wait blocks until done and prints the observation card.
     --background (default) returns immediately and prints {run_id}.
 
-    SLURM resource flags (--mem/--cpus/--time/--partition/--account) override
+    SLURM resource flags (--mem/--cpus/--gres/--time/--partition/--account) override
     per-server config for slurm submits and are shown in the run-detail panel."""
     client = _get_client()
 
@@ -293,6 +294,8 @@ def run(
         resources["mem"] = mem
     if cpus is not None:
         resources["cpus"] = cpus
+    if gres is not None:
+        resources["gres"] = gres
     if time_limit is not None:
         resources["time"] = time_limit
     if partition is not None:

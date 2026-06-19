@@ -20,6 +20,7 @@ jobctl run job.jobfile.yaml --wait --json   # submit, block, get the observation
 jobctl run job.jobfile.yaml                 # background → prints a run_id
 jobctl run job.jobfile.yaml --title "chi sweep χ=64" --tag sweep   # name what it's for
 jobctl run job.jobfile.yaml --mem-auto      # CPU OOM → retry with larger --mem; GPU OOM → stop + notify
+jobctl run job.jobfile.yaml --gres gpu:mi300a:1 --partition gpu     # request SLURM GRES such as MI300A
 jobctl await  <run_id> --json               # block on a backgrounded run
 jobctl status <run_id> --json               # state + health (+ title/tags)
 jobctl inspect <run_id> --json              # persisted observation card + record
