@@ -35,6 +35,7 @@ def test_omits_account_and_partition_when_not_configured():
     joined = " ".join(d)
     assert "--account" not in joined
     assert "--partition" not in joined
+    assert "--gres" not in joined
     # still emits sensible time/mem/cpus
     assert "--time=" in joined and "--mem=" in joined and "--cpus-per-task=" in joined
 
@@ -55,22 +56,44 @@ def test_account_emitted_only_when_configured():
     assert "--partition=capacity" in joined
 
 
+def test_gres_emitted_only_when_configured():
+    d = _backend({"partition": "gpu", "gres": "gpu:mi300a:1"})._build_directives(
+        _run(), None, "/wd"
+    )
+    joined = " ".join(d)
+    assert "--partition=gpu" in joined
+    assert "--gres=gpu:mi300a:1" in joined
+
+
 def test_per_run_override_wins_over_server_defaults():
-    b = _backend({"partition": "capacity", "mem": "1G", "cpus_per_task": 8})
-    run = _run(slurm_request={"partition": "lln", "mem": "100M", "cpus": 1, "time": "00:11:00"})
+    b = _backend({
+        "partition": "capacity",
+        "mem": "1G",
+        "cpus_per_task": 8,
+        "gres": "gpu:l40:1",
+    })
+    run = _run(slurm_request={
+        "partition": "lln",
+        "mem": "100M",
+        "cpus": 1,
+        "time": "00:11:00",
+        "gres": "gpu:mi300a:1",
+    })
     joined = " ".join(b._build_directives(run, None, "/wd"))
     assert "--partition=lln" in joined
     assert "--mem=100M" in joined
     assert "--cpus-per-task=1" in joined
     assert "--time=00:11:00" in joined
+    assert "--gres=gpu:mi300a:1" in joined
 
 
 def test_resource_request_dict_shape():
-    b = _backend({"partition": "lln"})
+    b = _backend({"partition": "lln", "gres": "gpu:mi300a:1"})
     req = b._resource_request(_run(slurm_request={"mem": "100M", "cpus": 1}))
     assert req["partition"] == "lln"
     assert req["mem"] == "100M"
     assert req["cpus"] == 1
+    assert req["gres"] == "gpu:mi300a:1"
     assert "account" not in req  # oblix: omitted
 
 

@@ -90,7 +90,7 @@ class Run:
     resource_summary: dict
     expectation_match: Match | None
     observation_card: dict | None
-    # Resolved SLURM submission request (partition/account/time/mem/cpus + job_id).
+    # Resolved SLURM submission request (partition/account/time/mem/cpus/gres + job_id).
     # None for non-SLURM backends. Surfaced in the run-detail panel.
     slurm_request: dict | None = None
     # Human-readable identity: what this run is *for*. Stored in the run row (not

@@ -133,7 +133,7 @@ class ApiClient:
                       (the response carries ``reused: true``).
         callback_url: if set, the daemon POSTs the observation card here when
                       the run reaches a terminal state.
-        resources:    SLURM resource overrides (partition/account/time/mem/cpus)
+        resources:    SLURM resource overrides (partition/account/time/mem/cpus/gres)
                       applied on top of per-server config for slurm submits.
         title/note/tags: human-readable identity — what this run is *for*. Shown
                       in the CLI and the web panel instead of a bare hash.

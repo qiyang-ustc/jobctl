@@ -347,14 +347,14 @@ class TestCancelRerun:
         run = app_client.post("/runs", json={
             "jobfile_id": jf_id,
             "params": {},
-            "resources": {"mem": "2G", "cpus": 2, "job_id": "old-job"},
+            "resources": {"mem": "2G", "cpus": 2, "gres": "gpu:mi300a:1", "job_id": "old-job"},
             "auto_policy": {"mem_auto": True, "factor": 1.5, "max_attempts": 3},
         }).json()
 
         resp = app_client.post(f"/runs/{run['run_id']}/rerun")
         assert resp.status_code == 200
         new_run = resp.json()
-        assert new_run["slurm_request"] == {"mem": "2G", "cpus": 2}
+        assert new_run["slurm_request"] == {"mem": "2G", "cpus": 2, "gres": "gpu:mi300a:1"}
         assert new_run["auto_policy"]["mem_auto"] is True
         assert new_run["attempt"] == 1
 

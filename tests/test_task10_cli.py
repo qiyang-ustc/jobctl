@@ -245,6 +245,27 @@ class TestRunBackground:
         assert data["auto_policy"]["mem_auto"] is True
         assert data["auto_policy"]["max_attempts"] == 2
 
+    def test_run_background_gres_flag_persists_slurm_request(self, cli_env, jobfile_yaml):
+        """--gres is persisted with the run's SLURM resource overrides."""
+        runner, app, ac, http_client, jf_id = cli_env
+        result = runner.invoke(
+            app,
+            [
+                "run",
+                "--background",
+                "--json",
+                "--gres",
+                "gpu:mi300a:1",
+                "--partition",
+                "gpu",
+                jf_id,
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["slurm_request"]["gres"] == "gpu:mi300a:1"
+        assert data["slurm_request"]["partition"] == "gpu"
+
     def test_run_background_no_json_prints_run_id_only(self, cli_env, jobfile_yaml):
         """Without --json, run --background prints a bare run_id string."""
         runner, app, ac, http_client, jf_id = cli_env

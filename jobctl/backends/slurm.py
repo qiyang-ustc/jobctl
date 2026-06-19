@@ -291,12 +291,12 @@ class SlurmBackend(Backend):
         """Resolve the SLURM resource request for *run*.
 
         Precedence: per-run override (``run.slurm_request``) > per-server config
-        (``self._server_config``) > built-in fallback. ``account`` and
-        ``partition`` are OMITTED when neither override nor server config sets
-        them — different clusters use different (or no) accounts/partitions, so
-        forcing one server's values onto another is wrong (the old bug: oblix,
-        which uses partition ``lln`` and no account, got hipster's
-        ``--account=linuxusers --partition=capacity``).
+        (``self._server_config``) > built-in fallback. ``account``,
+        ``partition``, and ``gres`` are OMITTED when neither override nor server
+        config sets them — different clusters use different accounts,
+        partitions, and generic resources, so forcing one server's values onto
+        another is wrong (the old bug: oblix, which uses partition ``lln`` and
+        no account, got hipster's ``--account=linuxusers --partition=capacity``).
         """
         cfg = self._server_config
         ov = getattr(run, "slurm_request", None) or {}
@@ -312,6 +312,9 @@ class SlurmBackend(Backend):
         req["mem"] = ov.get("mem", cfg.get("mem", "1G"))
         # accept either 'cpus' (CLI/override) or 'cpus_per_task' (server config)
         req["cpus"] = ov.get("cpus", ov.get("cpus_per_task", cfg.get("cpus_per_task", 1)))
+        gres = ov.get("gres", cfg.get("gres"))
+        if gres:
+            req["gres"] = gres
         return req
 
     def _build_directives(self, run: "Run", jobfile: "JobFile", workdir: str) -> list[str]:
@@ -329,6 +332,8 @@ class SlurmBackend(Backend):
         directives.append(f"--time={req['time']}")
         directives.append(f"--mem={req['mem']}")
         directives.append(f"--cpus-per-task={req['cpus']}")
+        if req.get("gres"):
+            directives.append(f"--gres={req['gres']}")
         return directives
 
     def _write_remote_file(self, remote_path: str, content: str) -> None:
