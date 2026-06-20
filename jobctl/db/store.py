@@ -127,6 +127,32 @@ class Store:
         )
         conn.commit()
 
+    def update_jobfile_revision(self, jobfile_id: str, jf: JobFile) -> None:
+        conn = self._get_conn()
+        conn.execute(
+            """
+            UPDATE jobfiles SET
+                version = version + 1,
+                source_path = ?,
+                command_template = ?,
+                params_schema = ?,
+                backend_prefs = ?,
+                artifact_patterns = ?,
+                content_hash = ?
+            WHERE id = ?
+            """,
+            (
+                jf.source_path,
+                jf.command_template,
+                _j(jf.params_schema),
+                _j(jf.backend_prefs),
+                _j(jf.artifact_patterns),
+                jf.content_hash,
+                jobfile_id,
+            ),
+        )
+        conn.commit()
+
     def _row_to_jobfile(self, row: sqlite3.Row) -> JobFile:
         return JobFile(
             id=row["id"],

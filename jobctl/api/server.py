@@ -222,7 +222,7 @@ def _register_routes(app: FastAPI) -> None:
     @app.post("/jobfiles")
     async def register_jobfile(body: dict, request: Request):
         """Register a JobFile from a file path."""
-        from jobctl.jobfile import load_jobfile, content_hash as calc_hash
+        from jobctl.jobfile import load_jobfile
 
         path = body.get("path", "")
         if not path:
@@ -241,11 +241,11 @@ def _register_routes(app: FastAPI) -> None:
         # Check if already registered by name
         existing = store.get_jobfile_by_name(jf.name)
         if existing is not None:
-            # Re-register: check hash. If same, return existing; if different, bump version.
+            # Re-register: check hash. If same, return existing; if different,
+            # bump version and refresh the manifest-derived fields in place.
             if existing.content_hash == jf.content_hash:
                 return _jobfile_to_dict(existing)
-            # Update the existing record's version + hash
-            store.bump_version(existing.id, jf.content_hash)
+            store.update_jobfile_revision(existing.id, jf)
             updated = store.get_jobfile(existing.id)
             return _jobfile_to_dict(updated)
 

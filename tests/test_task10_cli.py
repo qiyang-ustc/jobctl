@@ -634,6 +634,35 @@ class TestRegisterJobfiles:
         assert "id" in data
         assert data["name"] == "cli-hello"
 
+    def test_register_changed_manifest_refreshes_fields(
+        self, cli_env, jobfile_yaml, tmp_path
+    ):
+        runner, app, ac, http_client, jf_id = cli_env
+        script = tmp_path / "goodbye.sh"
+        script.write_text('#!/bin/bash\necho "goodbye from jobctl"\n')
+        script.chmod(0o755)
+        Path(jobfile_yaml).write_text(f"""
+name: cli-hello
+command: "bash {script} --mode {{mode}}"
+params:
+  mode:
+    type: str
+    default: slow
+backends:
+  - backend: local
+artifacts:
+  - "*.txt"
+""")
+
+        resp = http_client.post("/jobfiles", json={"path": jobfile_yaml})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] == jf_id
+        assert data["version"] == 2
+        assert data["command_template"] == f"bash {script} --mode {{mode}}"
+        assert data["params_schema"] == {"mode": {"type": "str", "default": "slow"}}
+        assert data["artifact_patterns"] == ["*.txt"]
+
     def test_jobfiles_json(self, cli_env):
         runner, app, ac, http_client, jf_id = cli_env
         result = runner.invoke(app, ["jobfiles", "--json"])
