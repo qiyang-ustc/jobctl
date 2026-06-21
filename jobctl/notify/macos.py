@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 # Unicode marks used in summaries (kept as module constants for clarity).
 _CHECK = "✅"  # ✅
+_WARN = "⚠️"  # ⚠️
 _CROSS = "❌"  # ❌
 
 # Terminal states / matches that count as success vs failure.
@@ -123,16 +124,17 @@ def notify_macos(
 # summarize_terminal_events (pure)
 # ---------------------------------------------------------------------------
 
-def _is_success(event: dict) -> bool:
-    """Classify a single terminal event as success (True) or failure (False)."""
+def _classify_event(event: dict) -> str:
+    """Classify a single terminal event as ``ok``, ``warn`` or ``bad``."""
     state = event.get("state")
     match = event.get("match")
     if state == "completed" and match in _SUCCESS_MATCHES:
-        return True
+        return "ok"
+    if state == "completed":
+        return "warn"
     if state in _FAILURE_STATES or match in _FAILURE_MATCHES:
-        return False
-    # Anything not explicitly a success is treated as a failure for the banner.
-    return False
+        return "bad"
+    return "warn"
 
 
 def summarize_terminal_events(events: list[dict]) -> dict:
@@ -147,7 +149,8 @@ def summarize_terminal_events(events: list[dict]) -> dict:
     """
     if len(events) == 1:
         e = events[0]
-        mark = _CHECK if _is_success(e) else _CROSS
+        cls = _classify_event(e)
+        mark = {"ok": _CHECK, "warn": _WARN, "bad": _CROSS}[cls]
         return {
             "title": "jobctl",
             "subtitle": None,
@@ -155,8 +158,10 @@ def summarize_terminal_events(events: list[dict]) -> dict:
             "sound": None,
         }
 
-    ok = sum(1 for e in events if _is_success(e))
-    bad = len(events) - ok
+    classes = [_classify_event(e) for e in events]
+    ok = sum(1 for cls in classes if cls == "ok")
+    warn = sum(1 for cls in classes if cls == "warn")
+    bad = sum(1 for cls in classes if cls == "bad")
     titles = [e["title"] for e in events[:3]]
     subtitle = ", ".join(titles)
     if len(events) > 3:
@@ -164,7 +169,7 @@ def summarize_terminal_events(events: list[dict]) -> dict:
     return {
         "title": "jobctl",
         "subtitle": subtitle,
-        "message": f"{len(events)} jobs finished — {_CHECK}{ok} {_CROSS}{bad}",
+        "message": f"{len(events)} jobs finished — {_CHECK}{ok} {_WARN}{warn} {_CROSS}{bad}",
         "sound": None,
     }
 
