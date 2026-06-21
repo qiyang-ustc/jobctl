@@ -18,6 +18,7 @@ from jobctl.notify.macos import (
 
 # Unicode marks the implementation uses in summaries.
 _CHECK = "✅"
+_WARN = "⚠️"
 _CROSS = "❌"
 
 
@@ -132,19 +133,30 @@ def test_summarize_single_failure():
     assert "train-B" in s["message"]
 
 
-def test_summarize_three_events_two_ok_one_bad():
+def test_summarize_single_completed_inconclusive_is_warning():
+    events = [{"title": "train-C", "state": "completed", "match": "inconclusive"}]
+    s = summarize_terminal_events(events)
+    assert s["message"].startswith(_WARN)
+    assert "train-C" in s["message"]
+    assert not s["message"].startswith(_CROSS)
+
+
+def test_summarize_four_events_two_ok_one_warn_one_bad():
     events = [
         {"title": "job1", "state": "completed", "match": "usable"},
         {"title": "job2", "state": "completed", "match": "weak_signal"},
-        {"title": "job3", "state": "failed", "match": "bad_signal"},
+        {"title": "job3", "state": "completed", "match": "inconclusive"},
+        {"title": "job4", "state": "failed", "match": "bad_signal"},
     ]
     s = summarize_terminal_events(events)
-    assert "3 jobs finished" in s["message"]
+    assert "4 jobs finished" in s["message"]
     assert f"{_CHECK}2" in s["message"]
+    assert f"{_WARN}1" in s["message"]
     assert f"{_CROSS}1" in s["message"]
     assert s["subtitle"] is not None
     for title in ("job1", "job2", "job3"):
         assert title in s["subtitle"]
+    assert "job4" not in s["subtitle"]
 
 
 def test_summarize_more_than_three_truncates_subtitle():
@@ -180,6 +192,7 @@ def test_coalescer_flush_calls_notify_once():
 
     assert len(calls) == 1
     assert "3 jobs finished" in calls[0]["message"]
+    assert f"{_CROSS}1" in calls[0]["message"]
 
 
 def test_coalescer_flush_empty_is_noop():
