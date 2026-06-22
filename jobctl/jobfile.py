@@ -10,7 +10,6 @@ Public API:
 from __future__ import annotations
 
 import hashlib
-import re
 import string
 import uuid
 from datetime import datetime, timezone
@@ -20,9 +19,6 @@ from typing import Any
 import yaml
 
 from jobctl.db.models import JobFile
-
-
-_ENV_PLACEHOLDER_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
 
 def _preserved_shell_placeholder(field_name: str, format_spec: str) -> str:
@@ -142,7 +138,7 @@ def render_command(jobfile: JobFile, params: dict) -> str:
                 value = formatter.format_field(value, format_spec)
             rendered.append(str(value))
             continue
-        if literal.endswith("$") and conversion is None and _ENV_PLACEHOLDER_RE.match(field_name):
+        if literal.endswith("$") and conversion is None:
             rendered.append(_preserved_shell_placeholder(field_name, format_spec))
             continue
         raise KeyError(field_name)
