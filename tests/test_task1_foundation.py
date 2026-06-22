@@ -884,6 +884,29 @@ class TestJobfile:
         cmd = render_command(jf, {"chi": 60})
         assert cmd == "julia run.jl --threads ${SLURM_CPUS_PER_TASK} --chi 60"
 
+    def test_render_command_preserves_shell_parameter_expansions(self, tmp_path):
+        """Shell ${...} expansions are not treated as job params."""
+        from jobctl.jobfile import load_jobfile, render_command
+
+        manifest = tmp_path / "job.jobfile.yaml"
+        self._write_manifest(manifest, {
+            "name": "my-job",
+            "command": (
+                "bash -lc 'metrics_files=(a b); "
+                "echo ${#metrics_files[@]} ${RUN_DIR:-$PWD} --chi {chi}'"
+            ),
+            "params": {
+                "chi": {"type": "int", "default": 40},
+            },
+            "backends": [{"backend": "local"}],
+        })
+        jf = load_jobfile(str(manifest))
+        cmd = render_command(jf, {"chi": 60})
+        assert cmd == (
+            "bash -lc 'metrics_files=(a b); "
+            "echo ${#metrics_files[@]} ${RUN_DIR:-$PWD} --chi 60'"
+        )
+
     def test_render_command_still_rejects_missing_job_params(self, tmp_path):
         """Lowercase missing placeholders remain configuration errors."""
         from jobctl.jobfile import load_jobfile, render_command
