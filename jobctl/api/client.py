@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 _TERMINAL_STATES = {"completed", "failed", "cancelled", "stuck", "timeout"}
 _DEFAULT_POLL_INTERVAL = 1.0
 _DEFAULT_TIMEOUT = 600.0
+_DEFAULT_REQUEST_TIMEOUT = 20.0
+_SUBMIT_REQUEST_TIMEOUT = 300.0
+_HEALTH_REQUEST_TIMEOUT = 2.0
 
 
 class JobctlApiError(click.ClickException):
@@ -30,6 +33,13 @@ class JobctlApiError(click.ClickException):
 
 def _api_connection_message(base_url: str, exc: httpx.RequestError) -> str:
     message = str(exc) or exc.__class__.__name__
+    if isinstance(exc, httpx.ReadTimeout):
+        return (
+            f"jobctl daemon request to {base_url} timed out while waiting for a "
+            "response. If this happened during submit, the run may already have "
+            "been created; check `jobctl running --json`, `jobctl status <run_id> "
+            "--json`, and ~/.jobctl/daemon.log before retrying."
+        )
     if "Operation not permitted" in message or "Permission denied" in message:
         return (
             f"could not connect to the jobctl daemon at {base_url}: local sandbox "
@@ -62,7 +72,9 @@ class ApiClient:
         url = f"{self.base_url}{path}"
         if self._transport is not None:
             # Use TestClient directly
+            kwargs.pop("timeout", None)
             return self._transport.get(url, **kwargs)
+        kwargs.setdefault("timeout", _DEFAULT_REQUEST_TIMEOUT)
         try:
             return httpx.get(url, **kwargs)
         except httpx.RequestError as exc:
@@ -71,7 +83,9 @@ class ApiClient:
     def _post(self, path: str, json: dict | None = None, **kwargs) -> httpx.Response:
         url = f"{self.base_url}{path}"
         if self._transport is not None:
+            kwargs.pop("timeout", None)
             return self._transport.post(url, json=json, **kwargs)
+        kwargs.setdefault("timeout", _DEFAULT_REQUEST_TIMEOUT)
         try:
             return httpx.post(url, json=json, **kwargs)
         except httpx.RequestError as exc:
@@ -161,7 +175,7 @@ class ApiClient:
             body["tags"] = tags
         if auto_policy:
             body["auto_policy"] = auto_policy
-        resp = self._post("/runs", json=body)
+        resp = self._post("/runs", json=body, timeout=_SUBMIT_REQUEST_TIMEOUT)
         self._raise_for(resp, "submit")
         return resp.json()
 
@@ -321,6 +335,7 @@ def ensure_daemon(
     config: dict | None = None,
     wait_timeout: float = 10.0,
     poll_interval: float = 0.5,
+    pre_spawn_timeout: float = 2.0,
 ) -> str:
     """Ensure the jobctl daemon is running; start it if not.
 
@@ -352,13 +367,22 @@ def ensure_daemon(
     port = config.get("daemon_port", 7421)
     base_url = f"http://{host}:{port}"
 
-    # Check if already running
-    try:
-        resp = httpx.get(f"{base_url}/health", timeout=2.0)
-        if resp.status_code == 200:
+    def health_ok() -> bool:
+        try:
+            resp = httpx.get(f"{base_url}/health", timeout=_HEALTH_REQUEST_TIMEOUT)
+            return resp.status_code == 200
+        except Exception:
+            return False
+
+    # Check if already running. A busy daemon can occasionally miss a short
+    # health probe; retry briefly before spawning another server on the same port.
+    if health_ok():
+        return base_url
+    pre_spawn_deadline = time.time() + pre_spawn_timeout
+    while time.time() < pre_spawn_deadline:
+        time.sleep(poll_interval)
+        if health_ok():
             return base_url
-    except Exception:
-        pass
 
     # Spawn daemon. Send its stdout/stderr to a log file (NOT DEVNULL) so that
     # tracebacks and uvicorn output are recoverable — "check the logs" must work.
@@ -393,8 +417,7 @@ def ensure_daemon(
     while time.time() < deadline:
         time.sleep(poll_interval)
         try:
-            resp = httpx.get(f"{base_url}/health", timeout=2.0)
-            if resp.status_code == 200:
+            if health_ok():
                 return base_url
         except Exception:
             pass

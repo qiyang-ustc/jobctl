@@ -907,6 +907,23 @@ class TestJobfile:
             "echo ${#metrics_files[@]} ${RUN_DIR:-$PWD} --chi 60'"
         )
 
+    def test_render_command_preserves_awk_brace_blocks(self, tmp_path):
+        """Awk blocks inside shell commands are not job params."""
+        from jobctl.jobfile import load_jobfile, render_command
+
+        manifest = tmp_path / "job.jobfile.yaml"
+        self._write_manifest(manifest, {
+            "name": "my-job",
+            "command": "bash -lc \"squeue -h -j {job_id} | awk '{print \\$NF}'\"",
+            "params": {
+                "job_id": {"type": "str", "required": True},
+            },
+            "backends": [{"backend": "local"}],
+        })
+        jf = load_jobfile(str(manifest))
+        cmd = render_command(jf, {"job_id": "318366"})
+        assert cmd == "bash -lc \"squeue -h -j 318366 | awk '{print \\$NF}'\""
+
     def test_render_command_still_rejects_missing_job_params(self, tmp_path):
         """Lowercase missing placeholders remain configuration errors."""
         from jobctl.jobfile import load_jobfile, render_command
