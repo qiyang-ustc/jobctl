@@ -697,6 +697,41 @@ class TestApiClient:
         assert "sandbox" in message
         assert "Traceback" not in message
 
+    def test_submit_uses_long_request_timeout(self, monkeypatch):
+        from jobctl.api.client import ApiClient, _SUBMIT_REQUEST_TIMEOUT
+
+        captured = {}
+
+        def fake_post(url, **kwargs):
+            captured.update(kwargs)
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = {"run_id": "run-abc"}
+            return resp
+
+        monkeypatch.setattr("httpx.post", fake_post)
+        ac = ApiClient(base_url="http://127.0.0.1:7421")
+        assert ac.submit(jobfile_id="jf-abc")["run_id"] == "run-abc"
+        assert captured["timeout"] == _SUBMIT_REQUEST_TIMEOUT
+
+    def test_read_timeout_warns_submit_may_have_succeeded(self, monkeypatch):
+        from jobctl.api.client import ApiClient, JobctlApiError
+        import httpx
+
+        def timeout(*args, **kwargs):
+            raise httpx.ReadTimeout("timed out")
+
+        monkeypatch.setattr(httpx, "post", timeout)
+        ac = ApiClient(base_url="http://127.0.0.1:7421")
+
+        with pytest.raises(JobctlApiError) as excinfo:
+            ac.submit(jobfile_id="jf-abc")
+
+        message = str(excinfo.value)
+        assert "timed out" in message
+        assert "may already have been created" in message
+        assert "jobctl running --json" in message
+
 
 # ---------------------------------------------------------------------------
 # ensure_daemon — unit test (no real process spawning)
@@ -741,9 +776,38 @@ class TestEnsureDaemon:
                 url = ensure_daemon(
                     config={"daemon_host": "127.0.0.1", "daemon_port": 7421},
                     wait_timeout=2,
+                    pre_spawn_timeout=0,
                 )
                 assert url == "http://127.0.0.1:7421"
                 mock_popen.assert_called_once()
+
+    def test_ensure_daemon_retries_health_before_spawning(self):
+        """A transient busy health probe should not spawn a duplicate daemon."""
+        from jobctl.api.client import ensure_daemon
+        import httpx
+
+        mock_ok = MagicMock()
+        mock_ok.status_code = 200
+
+        call_count = 0
+
+        def mock_get(url, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise httpx.ReadTimeout("busy")
+            return mock_ok
+
+        with patch("httpx.get", side_effect=mock_get):
+            with patch("subprocess.Popen") as mock_popen:
+                url = ensure_daemon(
+                    config={"daemon_host": "127.0.0.1", "daemon_port": 7421},
+                    poll_interval=0.01,
+                    pre_spawn_timeout=1,
+                )
+
+        assert url == "http://127.0.0.1:7421"
+        mock_popen.assert_not_called()
 
     def test_ensure_daemon_log_fallback_is_not_user_visible(
         self, tmp_path, monkeypatch, caplog
@@ -785,6 +849,7 @@ class TestEnsureDaemon:
                         url = ensure_daemon(
                             config={"daemon_host": "127.0.0.1", "daemon_port": 7421},
                             wait_timeout=2,
+                            pre_spawn_timeout=0,
                         )
 
         assert url == "http://127.0.0.1:7421"
