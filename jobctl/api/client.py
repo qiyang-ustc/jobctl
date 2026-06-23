@@ -12,10 +12,16 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 from typing import Any
 
 import click
 import httpx
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback
+    fcntl = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -384,43 +390,64 @@ def ensure_daemon(
         if health_ok():
             return base_url
 
-    # Spawn daemon. Send its stdout/stderr to a log file (NOT DEVNULL) so that
-    # tracebacks and uvicorn output are recoverable — "check the logs" must work.
-    from jobctl.logsetup import log_path
-    daemon_log = log_path("daemon")
-    logger.info("Starting jobctl daemon on %s (log: %s)", base_url, daemon_log)
+    # Serialize auto-start across concurrent CLI invocations. Without this lock,
+    # a thundering herd can all observe a down daemon and spawn duplicate servers.
+    from jobctl.logsetup import log_dir, log_path
+    lock_fh = None
     try:
-        _log_fh = open(daemon_log, "a", buffering=1)
-    except OSError as exc:
-        fallback_log = f"{tempfile.gettempdir()}/jobctl-daemon.log"
-        logger.debug("daemon log %s is not writable (%s); using %s", daemon_log, exc, fallback_log)
-        _log_fh = open(fallback_log, "a", buffering=1)
-        print(
-            f"jobctl daemon log fallback: {daemon_log} is not writable ({exc}); "
-            f"using {fallback_log}",
-            file=_log_fh,
-            flush=True,
-        )
-    subprocess.Popen(
-        [
-            sys.executable, "-m", "jobctl.cli.main", "serve",
-            "--host", str(host),
-            "--port", str(port),
-        ],
-        stdout=_log_fh,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
+        if fcntl is not None:
+            try:
+                lock_path = log_dir() / "daemon.start.lock"
+                lock_fh = open(lock_path, "a")
+            except OSError as exc:
+                lock_path = Path(tempfile.gettempdir()) / f"jobctl-daemon-{host}-{port}.start.lock"
+                logger.debug("daemon start lock is not writable (%s); using %s", exc, lock_path)
+                lock_fh = open(lock_path, "a")
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
 
-    # Wait for it to come up
-    deadline = time.time() + wait_timeout
-    while time.time() < deadline:
-        time.sleep(poll_interval)
+        # Another process may have started the daemon while this one waited.
+        if health_ok():
+            return base_url
+
+        # Spawn daemon. Send its stdout/stderr to a log file (NOT DEVNULL) so that
+        # tracebacks and uvicorn output are recoverable — "check the logs" must work.
+        daemon_log = log_path("daemon")
+        logger.info("Starting jobctl daemon on %s (log: %s)", base_url, daemon_log)
         try:
+            _log_fh = open(daemon_log, "a", buffering=1)
+        except OSError as exc:
+            fallback_log = f"{tempfile.gettempdir()}/jobctl-daemon.log"
+            logger.debug("daemon log %s is not writable (%s); using %s", daemon_log, exc, fallback_log)
+            _log_fh = open(fallback_log, "a", buffering=1)
+            print(
+                f"jobctl daemon log fallback: {daemon_log} is not writable ({exc}); "
+                f"using {fallback_log}",
+                file=_log_fh,
+                flush=True,
+            )
+        subprocess.Popen(
+            [
+                sys.executable, "-m", "jobctl.cli.main", "serve",
+                "--host", str(host),
+                "--port", str(port),
+            ],
+            stdout=_log_fh,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+
+        # Keep the start lock until the daemon is reachable. Otherwise a second
+        # concurrent CLI can acquire the lock during uvicorn startup and spawn
+        # another process before the first has bound the port.
+        deadline = time.time() + wait_timeout
+        while time.time() < deadline:
+            time.sleep(poll_interval)
             if health_ok():
                 return base_url
-        except Exception:
-            pass
+    finally:
+        if lock_fh is not None and fcntl is not None:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            lock_fh.close()
 
     logger.debug("Daemon did not come up within %ss", wait_timeout)
     return base_url
