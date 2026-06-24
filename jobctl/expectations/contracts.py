@@ -28,9 +28,49 @@ from jobctl.db.models import (
 )
 
 
+NUMERIC_NAN_PATTERN = r"(?<![A-Za-z0-9_])[-+]?nan(?![A-Za-z0-9_])"
+
+
 # ---------------------------------------------------------------------------
 # Internal: per-criterion evaluation
 # ---------------------------------------------------------------------------
+
+def _regex_flags(flag_names: list[str] | str | None) -> int:
+    if flag_names is None:
+        return 0
+    if isinstance(flag_names, str):
+        flag_names = [flag_names]
+
+    flags = 0
+    for name in flag_names:
+        normalized = str(name).lower().replace("-", "_")
+        if normalized in {"ignorecase", "ignore_case", "i"}:
+            flags |= re.IGNORECASE
+        elif normalized in {"multiline", "multi_line", "m"}:
+            flags |= re.MULTILINE
+        elif normalized in {"dotall", "s"}:
+            flags |= re.DOTALL
+    return flags
+
+
+def _absence_matcher(check: dict[str, Any]) -> tuple[str, Any] | tuple[None, str]:
+    pattern = check.get("pattern", "")
+    if not pattern:
+        return None, "No pattern specified"
+
+    if check.get("regex", False):
+        try:
+            compiled = re.compile(pattern, _regex_flags(check.get("flags")))
+        except re.error as exc:
+            return None, f"Invalid regex: {exc}"
+        return check.get("label", pattern), compiled.search
+
+    if check.get("case_sensitive", True):
+        return check.get("label", pattern), lambda content: pattern in content
+
+    lowered = str(pattern).lower()
+    return check.get("label", pattern), lambda content: lowered in content.lower()
+
 
 def _eval_absence(
     criterion: Criterion,
@@ -46,20 +86,20 @@ def _eval_absence(
         None  -> could not evaluate (inconclusive)
     """
     check = criterion.check
-    pattern = check.get("pattern", "")
     targets: list[str] = check.get("targets", ["stdout", "stderr"])
 
-    if not pattern:
-        return None, "No pattern specified"
+    label, matcher = _absence_matcher(check)
+    if label is None:
+        return None, matcher
 
     found_in: list[str] = []
 
     for target in targets:
         if target == "stdout":
-            if pattern in stdout:
+            if matcher(stdout):
                 found_in.append("stdout")
         elif target == "stderr":
-            if pattern in stderr:
+            if matcher(stderr):
                 found_in.append("stderr")
         else:
             # It's a glob against artifact paths
@@ -67,16 +107,16 @@ def _eval_absence(
                 if fnmatch.fnmatch(Path(art.local_path).name, target):
                     try:
                         content = Path(art.local_path).read_text(errors="replace")
-                        if pattern in content:
+                        if matcher(content):
                             found_in.append(art.local_path)
                     except OSError:
                         pass
 
     if found_in:
-        detail = f"Pattern '{pattern}' found in: {', '.join(found_in)}"
+        detail = f"Pattern '{label}' found in: {', '.join(found_in)}"
         return False, detail
 
-    detail = f"Pattern '{pattern}' not found (pass)"
+    detail = f"Pattern '{label}' not found (pass)"
     return True, detail
 
 
@@ -508,7 +548,13 @@ def default_contract(jobfile: JobFile) -> ExpectationContract:
             id=f"default-nan-{uuid.uuid4().hex[:8]}",
             text="No NaN values in stdout, stderr, or log files",
             kind="absence",
-            check={"pattern": "NaN", "targets": ["stdout", "stderr", "*.log"]},
+            check={
+                "pattern": NUMERIC_NAN_PATTERN,
+                "regex": True,
+                "flags": ["ignorecase"],
+                "label": "numeric NaN",
+                "targets": ["stdout", "stderr", "*.log"],
+            },
             status="proposed",
             strength=1,
             evidence_run_ids=[],

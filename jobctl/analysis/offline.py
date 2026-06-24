@@ -9,6 +9,7 @@ import uuid
 from typing import Any
 
 from jobctl.analysis.base import Analyzer
+from jobctl.expectations.contracts import NUMERIC_NAN_PATTERN
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +183,13 @@ class OfflineAnalyzer(Analyzer):
             criteria.append(self._make_criterion(
                 text="No NaN values in any log or output",
                 kind="absence",
-                check={"pattern": "NaN", "targets": ["stdout", "stderr", "*.log"]},
+                check={
+                    "pattern": NUMERIC_NAN_PATTERN,
+                    "regex": True,
+                    "flags": ["ignorecase"],
+                    "label": "numeric NaN",
+                    "targets": ["stdout", "stderr", "*.log"],
+                },
             ))
 
         # Propose absence of Traceback if error is mentioned
