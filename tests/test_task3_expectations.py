@@ -35,6 +35,7 @@ from jobctl.db.models import (
 )
 from jobctl.db.store import Store
 from jobctl.expectations.contracts import (
+    NUMERIC_NAN_PATTERN,
     default_contract,
     evaluate,
 )
@@ -299,6 +300,53 @@ class TestEvaluateAbsence:
         )
         assert match == Match.BAD_SIGNAL
         assert per_criterion[0]["passed"] is False
+
+    def test_numeric_nan_absence_ignores_package_names(self) -> None:
+        """The default numeric-NaN check should not flag packages like NaNMath."""
+        crit = _make_criterion(
+            "absence",
+            {
+                "pattern": NUMERIC_NAN_PATTERN,
+                "regex": True,
+                "flags": ["ignorecase"],
+                "label": "numeric NaN",
+                "targets": ["stderr"],
+            },
+        )
+        contract = _make_contract([crit])
+        run = _make_run(exit_code=0)
+        stderr = "[77ba4419] + NaNMath v1.1.4\nPrecompiling project..."
+        match, evidence, per_criterion = evaluate(contract, run, [], "", stderr)
+        assert match == Match.USABLE
+        assert evidence == []
+        assert per_criterion[0]["passed"] is True
+
+    @pytest.mark.parametrize(
+        "stderr",
+        [
+            "loss=NaN at iteration 12",
+            "residual: -nan",
+            "gradient [+NaN]",
+        ],
+    )
+    def test_numeric_nan_absence_flags_numeric_nan_tokens(self, stderr: str) -> None:
+        """The default numeric-NaN check still flags standalone NaN tokens."""
+        crit = _make_criterion(
+            "absence",
+            {
+                "pattern": NUMERIC_NAN_PATTERN,
+                "regex": True,
+                "flags": ["ignorecase"],
+                "label": "numeric NaN",
+                "targets": ["stderr"],
+            },
+        )
+        contract = _make_contract([crit])
+        run = _make_run(exit_code=0)
+        match, evidence, per_criterion = evaluate(contract, run, [], "", stderr)
+        assert match == Match.BAD_SIGNAL
+        assert per_criterion[0]["passed"] is False
+        assert "numeric NaN" in per_criterion[0]["detail"]
 
 
 # ===========================================================================
@@ -686,6 +734,12 @@ class TestDefaultContract:
         assert "absence" in kinds
         # At least one criterion mentions NaN
         assert any("NaN" in t or "nan" in t.lower() for t in texts)
+        nan_criteria = [
+            c for c in contract.criteria
+            if "NaN" in c.text or "nan" in c.text.lower()
+        ]
+        assert nan_criteria[0].check["regex"] is True
+        assert nan_criteria[0].check["label"] == "numeric NaN"
 
     def test_default_contract_has_absence_traceback(self) -> None:
         """Default contract has an absence criterion for Traceback."""
