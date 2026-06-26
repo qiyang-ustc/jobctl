@@ -924,6 +924,33 @@ class TestJobfile:
         cmd = render_command(jf, {"job_id": "318366"})
         assert cmd == "bash -lc \"squeue -h -j 318366 | awk '{print \\$NF}'\""
 
+    def test_render_command_preserves_nested_cuda_cpp_braces(self, tmp_path):
+        """Inline CUDA/C++ source braces do not break JobFile rendering."""
+        from jobctl.jobfile import load_jobfile, render_command
+
+        cuda_command = (
+            "bash -lc 'cat > sanity.cu <<\"CU\"\n"
+            "#include <cuda_runtime.h>\n"
+            "__global__ void k(double *x) { if (threadIdx.x == 0) { x[0] = 1.0; } }\n"
+            "int main() { double *x = nullptr; int chi = {chi}; return chi == 0; }\n"
+            "CU\n"
+            "nvcc sanity.cu -DCHI={chi}'"
+        )
+        manifest = tmp_path / "job.jobfile.yaml"
+        self._write_manifest(manifest, {
+            "name": "cuda-sanity",
+            "command": cuda_command,
+            "params": {
+                "chi": {"type": "int", "required": True},
+            },
+            "backends": [{"backend": "slurm"}],
+        })
+        jf = load_jobfile(str(manifest))
+        cmd = render_command(jf, {"chi": 512})
+        assert "__global__ void k(double *x) { if (threadIdx.x == 0) { x[0] = 1.0; } }" in cmd
+        assert "int main() { double *x = nullptr; int chi = 512; return chi == 0; }" in cmd
+        assert "nvcc sanity.cu -DCHI=512" in cmd
+
     def test_render_command_still_rejects_missing_job_params(self, tmp_path):
         """Lowercase missing placeholders remain configuration errors."""
         from jobctl.jobfile import load_jobfile, render_command
