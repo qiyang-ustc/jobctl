@@ -109,6 +109,9 @@ Implementation should make these policy fields explicit and testable:
 - target idle capacity, such as `0.05`
 - maximum concurrent submissions or queued jobs when needed
 - interaction with explicit CLI overrides
+- CPU-only jobs must never be placed on GPU partitions or GPU nodes; reserve
+  H100/L4/RTX/MI300A and other accelerator nodes for jobs that explicitly
+  request CUDA, ROCm/HIP, `--gres`, or another GPU path.
 - behavior when `jobctl servers --json` reports stale or missing capacity data
 - conservative fallback when server health is weak or unknown
 
