@@ -29,9 +29,37 @@ def _looks_like_jobctl_placeholder(field_name: str) -> bool:
     return bool(_JOBCTL_PLACEHOLDER_RE.match(field_name))
 
 
-def _preserved_shell_placeholder(field_name: str, format_spec: str) -> str:
-    suffix = f":{format_spec}" if format_spec else ""
-    return "{" + field_name + suffix + "}"
+def _split_placeholder(content: str) -> tuple[str, str | None, str] | None:
+    """Parse a small Python-format-style field body.
+
+    This intentionally accepts only simple names with optional conversion and
+    format spec. Arbitrary braces in shell, C, C++, CUDA, awk, or Julia code are
+    treated as literals by the caller instead of being sent through
+    string.Formatter.
+    """
+    if not content or "{" in content or "}" in content:
+        return None
+
+    field_part = content
+    conversion: str | None = None
+    format_spec = ""
+
+    if "!" in field_part:
+        field_part, rest = field_part.split("!", 1)
+        if not rest:
+            return None
+        if ":" in rest:
+            conversion, format_spec = rest.split(":", 1)
+        else:
+            conversion = rest
+        if not conversion or len(conversion) != 1:
+            return None
+    elif ":" in field_part:
+        field_part, format_spec = field_part.split(":", 1)
+
+    if not _looks_like_jobctl_placeholder(field_part):
+        return None
+    return field_part, conversion, format_spec
 
 
 # ---------------------------------------------------------------------------
@@ -134,10 +162,49 @@ def render_command(jobfile: JobFile, params: dict) -> str:
     values = {k: str(v) for k, v in params.items()}
     formatter = string.Formatter()
     rendered: list[str] = []
-    for literal, field_name, format_spec, conversion in formatter.parse(jobfile.command_template):
-        rendered.append(literal)
-        if field_name is None:
+    template = jobfile.command_template
+    i = 0
+    n = len(template)
+
+    while i < n:
+        char = template[i]
+
+        if char == "{" and i + 1 < n and template[i + 1] == "{":
+            rendered.append("{")
+            i += 2
             continue
+
+        if char == "}" and i + 1 < n and template[i + 1] == "}":
+            rendered.append("}")
+            i += 2
+            continue
+
+        if char != "{":
+            rendered.append(char)
+            i += 1
+            continue
+
+        end = template.find("}", i + 1)
+        if end == -1:
+            rendered.append(char)
+            i += 1
+            continue
+
+        content = template[i + 1:end]
+
+        # Preserve shell ${...} expansions regardless of param names.
+        if i > 0 and template[i - 1] == "$":
+            rendered.append("{" + content + "}")
+            i = end + 1
+            continue
+
+        parsed = _split_placeholder(content)
+        if parsed is None:
+            rendered.append(char)
+            i += 1
+            continue
+
+        field_name, conversion, format_spec = parsed
         if field_name in values:
             value = values[field_name]
             if conversion:
@@ -145,14 +212,11 @@ def render_command(jobfile: JobFile, params: dict) -> str:
             if format_spec:
                 value = formatter.format_field(value, format_spec)
             rendered.append(str(value))
+            i = end + 1
             continue
-        if literal.endswith("$") and conversion is None:
-            rendered.append(_preserved_shell_placeholder(field_name, format_spec))
-            continue
-        if conversion is None and not _looks_like_jobctl_placeholder(field_name):
-            rendered.append(_preserved_shell_placeholder(field_name, format_spec))
-            continue
+
         raise KeyError(field_name)
+
     return "".join(rendered)
 
 
