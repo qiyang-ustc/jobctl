@@ -246,8 +246,17 @@ class TestRunBackground:
         assert data["auto_policy"]["max_attempts"] == 2
 
     def test_run_background_gres_flag_persists_slurm_request(self, cli_env, jobfile_yaml):
-        """--gres is persisted with the run's SLURM resource overrides."""
+        """--gres is persisted for a GPU-looking JobFile."""
         runner, app, ac, http_client, jf_id = cli_env
+        gpu_jf = Path(jobfile_yaml).with_name("gpu.jobfile.yaml")
+        gpu_jf.write_text(
+            "name: cli-gpu\n"
+            'command: "echo --device cuda"\n'
+            "params: {}\n"
+            "backends:\n"
+            "  - backend: local\n"
+            "artifacts: []\n"
+        )
         result = runner.invoke(
             app,
             [
@@ -258,7 +267,7 @@ class TestRunBackground:
                 "gpu:mi300a:1",
                 "--partition",
                 "gpu",
-                jf_id,
+                str(gpu_jf),
             ],
         )
         assert result.exit_code == 0, result.output

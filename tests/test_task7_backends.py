@@ -263,6 +263,47 @@ class TestSelectBackend:
         )
         assert resources == {"partition": "gpu_h100", "gres": "gpu:1"}
 
+    def test_cpu_workload_rejects_explicit_gpu_resources(self):
+        from jobctl.backends.base import infer_gpu_slurm_resources
+        jf = _make_jobfile(
+            name="cpu-bench",
+            command_template="python bench.py --device cpu",
+            backend_prefs=[{"backend": "slurm", "server": "snellius"}],
+        )
+        with pytest.raises(ValueError, match="looks CPU-only"):
+            infer_gpu_slurm_resources(
+                jf,
+                backend="slurm",
+                server="snellius",
+                resources={"partition": "gpu_h100", "gres": "gpu:1"},
+                selected_pref=jf.backend_prefs[0],
+                config={"servers": {"snellius": {}}},
+            )
+
+    def test_cpu_workload_rejects_gpu_resources_from_backend_pref(self):
+        from jobctl.backends.base import infer_gpu_slurm_resources
+        jf = _make_jobfile(
+            name="cpu-bench",
+            command_template="python bench.py --device cpu",
+            backend_prefs=[
+                {
+                    "backend": "slurm",
+                    "server": "snellius",
+                    "partition": "gpu_h100",
+                    "gres": "gpu:1",
+                }
+            ],
+        )
+        with pytest.raises(ValueError, match="looks CPU-only"):
+            infer_gpu_slurm_resources(
+                jf,
+                backend="slurm",
+                server="snellius",
+                resources={},
+                selected_pref=jf.backend_prefs[0],
+                config={"servers": {"snellius": {}}},
+            )
+
 
 class TestGetBackend:
     def test_returns_local_backend(self):

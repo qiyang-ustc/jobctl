@@ -20,7 +20,7 @@ jobctl run job.jobfile.yaml --wait --json   # submit, block, get the observation
 jobctl run job.jobfile.yaml                 # background → prints a run_id
 jobctl run job.jobfile.yaml --title "chi sweep χ=64" --tag sweep   # name what it's for
 jobctl run job.jobfile.yaml --mem-auto      # CPU OOM → retry with larger --mem; GPU OOM → stop + notify
-jobctl run job.jobfile.yaml --gres gpu:mi300a:1 --partition gpu     # request SLURM GRES such as MI300A
+jobctl run gpu.jobfile.yaml --gres gpu:mi300a:1 --partition gpu     # GPU JobFile: request SLURM GRES such as MI300A
 jobctl await  <run_id> --json               # block on a backgrounded run
 jobctl status <run_id> --json               # state + health (+ title/tags)
 jobctl inspect <run_id> --json              # persisted observation card + record
@@ -34,6 +34,11 @@ jobctl servers --json                       # cluster health, queue, capacity, p
 `--title` / `--note` / `--tag` (or `PATCH /runs/{id}`); it shows up across the
 CLI, the web panel, and the JSON API as `display_title` (with a sensible
 `<jobfile> · key params` fallback) so a run is never just a hash.
+
+GPU SLURM resources are guarded: a JobFile must show accelerator use in the
+actual command or resolved parameters, such as CUDA, ROCm/HIP, `nvidia-smi`, or
+`--device cuda`. A CPU-looking JobFile that requests `--gres` or a GPU partition
+is rejected before submission instead of consuming accelerator nodes.
 
 ## Dashboard
 

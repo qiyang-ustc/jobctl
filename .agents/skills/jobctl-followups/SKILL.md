@@ -111,7 +111,10 @@ Implementation should make these policy fields explicit and testable:
 - interaction with explicit CLI overrides
 - CPU-only jobs must never be placed on GPU partitions or GPU nodes; reserve
   H100/L4/RTX/MI300A and other accelerator nodes for jobs that explicitly
-  request CUDA, ROCm/HIP, `--gres`, or another GPU path.
+  use CUDA, ROCm/HIP, `nvidia-smi`, `--device cuda`, or another accelerator path
+  in the executable command or resolved parameters. `--gres` or a GPU partition
+  by itself is a resource request, not proof of a GPU workload; CPU-looking jobs
+  that request GPU resources should be rejected before submission.
 - behavior when `jobctl servers --json` reports stale or missing capacity data
 - conservative fallback when server health is weak or unknown
 

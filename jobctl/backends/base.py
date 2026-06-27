@@ -62,6 +62,22 @@ def _flatten_text(value: Any) -> list[str]:
     return [str(value)]
 
 
+def _flatten_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for item in value.values():
+            parts.extend(_flatten_values(item))
+        return parts
+    if isinstance(value, (list, tuple, set)):
+        parts = []
+        for item in value:
+            parts.extend(_flatten_values(item))
+        return parts
+    return [str(value)]
+
+
 def _gpu_terms_from_text(text: str) -> set[str]:
     lowered = text.lower()
     terms = {marker for marker in _GPU_MARKERS if marker in lowered}
@@ -97,15 +113,37 @@ def jobfile_gpu_terms(
     metadata: dict | None = None,
 ) -> set[str]:
     """Detect conservative GPU intent from a JobFile and submission metadata."""
-    return _gpu_terms_from_values(
-        getattr(jobfile, "name", ""),
-        getattr(jobfile, "command_template", ""),
-        getattr(jobfile, "params_schema", {}),
-        getattr(jobfile, "artifact_patterns", []),
-        params or {},
-        resources or {},
-        metadata or {},
-    )
+    terms = jobfile_workload_gpu_terms(jobfile, params=params, metadata=metadata)
+    terms.update(_gpu_terms_from_values(resources or {}))
+    return terms
+
+
+def jobfile_workload_gpu_terms(
+    jobfile: "JobFile",
+    *,
+    params: dict | None = None,
+    metadata: dict | None = None,
+) -> set[str]:
+    """Detect whether the workload itself appears to require a GPU.
+
+    SLURM resource fields are intentionally excluded. A CPU command with
+    ``--partition=gpu_h100`` must not become a GPU workload just because it
+    asked for a GPU partition. Descriptive labels such as job names, titles, or
+    artifact filenames can refine the accelerator model only after the command
+    or resolved parameter values already prove GPU use.
+    """
+    terms = _gpu_terms_from_values(getattr(jobfile, "command_template", ""))
+    for text in _flatten_values(params or {}):
+        terms.update(_gpu_terms_from_text(text))
+    if terms:
+        terms.update(
+            _gpu_terms_from_values(
+                getattr(jobfile, "name", ""),
+                getattr(jobfile, "artifact_patterns", []),
+                metadata or {},
+            )
+        )
+    return terms
 
 
 def jobfile_requires_gpu(
@@ -116,7 +154,27 @@ def jobfile_requires_gpu(
     metadata: dict | None = None,
 ) -> bool:
     """Return True when the submission appears to need an accelerator."""
-    return bool(jobfile_gpu_terms(jobfile, params=params, resources=resources, metadata=metadata))
+    return bool(jobfile_workload_gpu_terms(jobfile, params=params, metadata=metadata))
+
+
+def validate_gpu_resource_request(
+    jobfile: "JobFile",
+    resources: dict | None,
+    *,
+    params: dict | None = None,
+    metadata: dict | None = None,
+) -> None:
+    """Reject CPU-looking workloads that request GPU SLURM resources."""
+    if not slurm_resources_request_gpu(resources):
+        return
+    workload_terms = jobfile_workload_gpu_terms(jobfile, params=params, metadata=metadata)
+    if workload_terms:
+        return
+    raise ValueError(
+        f"JobFile {jobfile.name!r} looks CPU-only but requested GPU SLURM "
+        "resources. Remove --gres/--partition GPU resources, or make the "
+        "JobFile explicitly use CUDA, ROCm/HIP, or another GPU path."
+    )
 
 
 def backend_pref_slurm_resources(pref: dict | None) -> dict:
@@ -297,10 +355,11 @@ def infer_gpu_slurm_resources(
     """
     merged = dict(backend_pref_slurm_resources(selected_pref))
     merged.update(resources or {})
+    validate_gpu_resource_request(jobfile, merged, params=params, metadata=metadata)
     if backend != "slurm":
         return merged
 
-    terms = jobfile_gpu_terms(jobfile, params=params, resources=merged, metadata=metadata)
+    terms = jobfile_workload_gpu_terms(jobfile, params=params, metadata=metadata)
     if not terms:
         return merged
     if slurm_resources_request_gpu(merged):
