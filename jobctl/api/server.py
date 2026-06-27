@@ -284,7 +284,7 @@ def _register_routes(app: FastAPI) -> None:
             auto_policy (dict, optional) — automatic recovery policy
         """
         from jobctl.jobfile import resolve_params, render_command, input_hashes as calc_input_hashes
-        from jobctl.backends.base import select_backend, get_backend
+        from jobctl.backends.base import get_backend, infer_gpu_slurm_resources, select_backend_pref
         from jobctl.memory.memory import query as mem_query
         from jobctl.db.models import Run, State, Health, Match
 
@@ -356,9 +356,34 @@ def _register_routes(app: FastAPI) -> None:
         # Select backend
         servers = store.list_servers()
         backend_override = body.get("backend_override")
-        backend_name, server_name, task_name = select_backend(
-            jf, servers, override=backend_override
+        submit_metadata = {
+            "title": body.get("title"),
+            "note": body.get("note"),
+            "tags": body.get("tags"),
+        }
+        backend_name, server_name, task_name, selected_pref = select_backend_pref(
+            jf,
+            servers,
+            override=backend_override,
+            resources=resources,
+            params=resolved_params,
+            config=cfg,
+            metadata=submit_metadata,
         )
+        try:
+            resources = infer_gpu_slurm_resources(
+                jf,
+                params=resolved_params,
+                resources=resources,
+                backend=backend_name,
+                server=server_name,
+                task=task_name,
+                selected_pref=selected_pref,
+                config=cfg,
+                metadata=submit_metadata,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
 
         now = datetime.now(timezone.utc).isoformat()
         run_id = f"run-{uuid.uuid4().hex[:12]}"
@@ -572,7 +597,7 @@ def _register_routes(app: FastAPI) -> None:
     @app.post("/runs/{run_id}/rerun")
     async def rerun(run_id: str, request: Request):
         from jobctl.jobfile import render_command, input_hashes as calc_input_hashes
-        from jobctl.backends.base import select_backend, get_backend
+        from jobctl.backends.base import get_backend, infer_gpu_slurm_resources, select_backend_pref
         from jobctl.db.models import Run, State, Health
         from jobctl.memory.memory import query as mem_query
 
@@ -591,7 +616,35 @@ def _register_routes(app: FastAPI) -> None:
         new_run_id = f"run-{uuid.uuid4().hex[:12]}"
 
         servers = store.list_servers()
-        backend_name, server_name, task_name = select_backend(jf, servers, override=None)
+        resources = _strip_slurm_job_id(orig.slurm_request) or {}
+        rerun_metadata = {
+            "title": orig.title,
+            "note": orig.note,
+            "tags": orig.tags,
+        }
+        backend_name, server_name, task_name, selected_pref = select_backend_pref(
+            jf,
+            servers,
+            override=None,
+            resources=resources,
+            params=orig.params,
+            config=cfg,
+            metadata=rerun_metadata,
+        )
+        try:
+            resources = infer_gpu_slurm_resources(
+                jf,
+                params=orig.params,
+                resources=resources,
+                backend=backend_name,
+                server=server_name,
+                task=task_name,
+                selected_pref=selected_pref,
+                config=cfg,
+                metadata=rerun_metadata,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
 
         new_run = Run(
             run_id=new_run_id,
@@ -616,7 +669,7 @@ def _register_routes(app: FastAPI) -> None:
             resource_summary={},
             expectation_match=None,
             observation_card=None,
-            slurm_request=_strip_slurm_job_id(orig.slurm_request),
+            slurm_request=resources or None,
             title=orig.title,
             note=orig.note,
             tags=orig.tags,

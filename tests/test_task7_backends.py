@@ -205,6 +205,64 @@ class TestSelectBackend:
         assert server is None
         assert task is None
 
+    def test_gpu_intent_skips_local_cpu_fallback_when_slurm_pref_available(self):
+        from jobctl.backends.base import select_backend_pref
+        jf = _make_jobfile(
+            name="cuda-h100-bench",
+            command_template="nvidia-smi -L && python bench.py --device cuda",
+            backend_prefs=[
+                {"backend": "local"},
+                {"backend": "slurm", "server": "snellius"},
+            ],
+        )
+        servers = [_make_server("snellius", backend_type="slurm", online=True)]
+        backend, server, task, pref = select_backend_pref(jf, servers, override=None)
+        assert backend == "slurm"
+        assert server == "snellius"
+        assert pref["server"] == "snellius"
+
+    def test_infer_gpu_resources_from_h100_intent(self):
+        from jobctl.backends.base import infer_gpu_slurm_resources
+        jf = _make_jobfile(
+            name="h100-profile",
+            command_template="python bench.py --device cuda",
+            backend_prefs=[{"backend": "slurm", "server": "snellius"}],
+        )
+        resources = infer_gpu_slurm_resources(
+            jf,
+            backend="slurm",
+            server="snellius",
+            resources={},
+            selected_pref=jf.backend_prefs[0],
+            config={"servers": {"snellius": {}}},
+        )
+        assert resources["partition"] == "gpu_h100"
+        assert resources["gres"] == "gpu:1"
+
+    def test_backend_pref_slurm_resources_are_used_for_gpu_submit(self):
+        from jobctl.backends.base import infer_gpu_slurm_resources
+        jf = _make_jobfile(
+            name="cuda-bench",
+            command_template="python bench.py --device cuda",
+            backend_prefs=[
+                {
+                    "backend": "slurm",
+                    "server": "snellius",
+                    "partition": "gpu_h100",
+                    "gres": "gpu:1",
+                }
+            ],
+        )
+        resources = infer_gpu_slurm_resources(
+            jf,
+            backend="slurm",
+            server="snellius",
+            resources={},
+            selected_pref=jf.backend_prefs[0],
+            config={"servers": {"snellius": {}}},
+        )
+        assert resources == {"partition": "gpu_h100", "gres": "gpu:1"}
+
 
 class TestGetBackend:
     def test_returns_local_backend(self):

@@ -398,6 +398,25 @@ class TestInspectCommand:
         assert result.exit_code == 0, result.output
         assert len(result.output.strip()) > 0
 
+    def test_inspect_daemon_connection_error_has_no_traceback(self):
+        from jobctl.api.client import JobctlApiError
+        from jobctl.cli import main as cli_module
+        from jobctl.cli.main import app
+
+        class BrokenClient:
+            def get_run(self, run_id):
+                raise JobctlApiError("could not connect to the jobctl daemon")
+
+        cli_module._OVERRIDE_CLIENT = BrokenClient()
+        try:
+            result = CliRunner().invoke(app, ["inspect", "run-missing", "--json"])
+        finally:
+            cli_module._OVERRIDE_CLIENT = None
+
+        assert result.exit_code == 1
+        assert "could not connect to the jobctl daemon" in result.output
+        assert "Traceback" not in result.output
+
 
 # ===========================================================================
 # Tests: logs

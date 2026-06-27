@@ -65,6 +65,17 @@ def _get_existing_client():
     return ApiClient(base_url=f"http://{host}:{port}")
 
 
+def _api_or_exit(func):
+    """Run an API call and print daemon connection errors without a traceback."""
+    from jobctl.api.client import JobctlApiError
+
+    try:
+        return func()
+    except JobctlApiError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+
+
 # ---------------------------------------------------------------------------
 # Output helpers
 # ---------------------------------------------------------------------------
@@ -457,7 +468,7 @@ def status(
 ):
     """Print the current state of a run."""
     client = _get_client()
-    run = client.get_run(run_id)
+    run = _api_or_exit(lambda: client.get_run(run_id))
 
     if json_out:
         _print_json(run)
@@ -486,7 +497,7 @@ def running(
 ):
     """List active jobctl runs and scheduler-visible active jobs."""
     client = _get_client()
-    snapshot = _running_snapshot(client)
+    snapshot = _api_or_exit(lambda: _running_snapshot(client))
 
     if json_out:
         _print_json(snapshot)
@@ -548,7 +559,7 @@ def logs(
 ):
     """Tail stdout or stderr for a run."""
     client = _get_client()
-    text = client.logs(run_id, stream=stream, tail=tail)
+    text = _api_or_exit(lambda: client.logs(run_id, stream=stream, tail=tail))
     if json_out:
         _print_json({"run_id": run_id, "stream": stream, "tail": tail, "text": text})
     else:
@@ -566,7 +577,7 @@ def artifacts(
 ):
     """List artifacts for a run."""
     client = _get_client()
-    arts = client.artifacts(run_id)
+    arts = _api_or_exit(lambda: client.artifacts(run_id))
 
     if json_out:
         _print_json(arts)
@@ -588,7 +599,7 @@ def inspect(
 ):
     """Print the full run record including observation card."""
     client = _get_client()
-    run = client.get_run(run_id)
+    run = _api_or_exit(lambda: client.get_run(run_id))
 
     if json_out:
         _print_json(run)

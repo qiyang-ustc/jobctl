@@ -241,6 +241,65 @@ class TestSubmitRun:
         assert resp.status_code == 200
         assert resp.json()["backend"] == "local"
 
+    def test_submit_h100_job_infers_gpu_slurm_resources(self, monkeypatch, tmp_path):
+        """CUDA/H100 JobFiles should not fall through to a CPU SLURM default."""
+        from fastapi.testclient import TestClient
+        from jobctl.api.server import create_app
+        from jobctl.backends.base import SubmitResult
+        from jobctl.db.models import Server
+
+        class FakeSlurmBackend:
+            def submit(self, run, jobfile):
+                request = dict(run.slurm_request or {})
+                request["job_id"] = "123"
+                return SubmitResult(remote_job_id="123", workdir="/remote/run", slurm_request=request)
+
+        monkeypatch.setattr("jobctl.backends.base.get_backend", lambda *a, **k: FakeSlurmBackend())
+
+        jf_path = tmp_path / "h100.jobfile.yaml"
+        jf_path.write_text(
+            "name: exactlr-h100-profile\n"
+            "command: |\n"
+            "  bash -lc 'nvidia-smi -L; python bench.py --device cuda'\n"
+            "params: {}\n"
+            "backends:\n"
+            "  - backend: slurm\n"
+            "    server: snellius\n"
+            "artifacts: []\n"
+        )
+        app = create_app(
+            config={
+                "db_path": str(tmp_path / "gpu.db"),
+                "run_dir": str(tmp_path / "runs"),
+                "servers": {"snellius": {"backend": "slurm"}},
+                "probe_interval_seconds": 9999,
+            },
+            start_monitor=False,
+        )
+        app.state.store.upsert_server(
+            Server(
+                name="snellius",
+                backend_type="slurm",
+                online=True,
+                last_heartbeat=None,
+                cpu={},
+                mem={},
+                gpu={},
+                disk={},
+                slurm_queue={},
+                note=None,
+            )
+        )
+
+        with TestClient(app) as client:
+            jf_id = client.post("/jobfiles", json={"path": str(jf_path)}).json()["id"]
+            data = client.post("/runs", json={"jobfile_id": jf_id, "params": {}}).json()
+
+        assert data["backend"] == "slurm"
+        assert data["server"] == "snellius"
+        assert data["slurm_request"]["partition"] == "gpu_h100"
+        assert data["slurm_request"]["gres"] == "gpu:1"
+
     def test_submit_failure_persists_observation_card(self, app_client, sample_jobfile_yaml):
         """A backend submit error still produces an inspectable observation card."""
         reg = app_client.post("/jobfiles", json={"path": sample_jobfile_yaml})
