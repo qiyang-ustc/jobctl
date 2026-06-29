@@ -1,13 +1,13 @@
-"""Bug-report assembly + GitHub issue submission.
+"""Bug-report assembly plus optional GitHub issue submission.
 
-Lets an agent (or a human) file a jobctl bug straight from the CLI:
+Lets an agent (or a human) create a local jobctl bug report from the CLI:
 
     jobctl --report-bug "monitor marked my running job stuck" --report-run run-abc123
     jobctl report-bug "monitor marked my running job stuck" --run run-abc123
 
 It bundles diagnostics (version, platform, log tails, the run record, recent
-failed/stuck runs) and opens a GitHub issue on the jobctl repo so the
-maintainer sees it. Falls back to a local file when `gh` is unavailable.
+failed/stuck runs) into a local Markdown report for the current user to review.
+Uploading to GitHub is explicit opt-in via the CLI submit flags.
 """
 from __future__ import annotations
 
@@ -53,7 +53,14 @@ def build_report(
             log_dir = Path(tempfile.gettempdir()) / "jobctl"
     log_dir = Path(log_dir)
 
-    out: list[str] = [f"## What happened\n\n{description}\n", "## Environment"]
+    out: list[str] = [
+        "## Privacy note\n\n"
+        "This report is generated locally for the current user to review. "
+        "It may include local jobctl log tails; jobctl does not upload it "
+        "unless the user explicitly passes the submit flag.\n",
+        f"## What happened\n\n{description}\n",
+        "## Environment",
+    ]
     out.append(f"- jobctl version: {version}")
     out.append(f"- platform: {platform.platform()}")
     out.append(f"- python: {sys.version.split()[0]}")
@@ -76,7 +83,7 @@ def build_report(
 
     out.append("## daemon.log (tail)\n```\n" + _tail(log_dir / "daemon.log") + "\n```")
     out.append("## cli.log (tail)\n```\n" + _tail(log_dir / "cli.log") + "\n```")
-    out.append("\n_Filed via `jobctl report-bug`._")
+    out.append("\n_Generated locally via `jobctl report-bug`._")
     return "\n".join(out)
 
 

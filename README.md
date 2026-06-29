@@ -115,18 +115,25 @@ Every invocation leaves a trail in `$JOBCTL_HOME` (default `~/.jobctl/`):
 - `daemon.log` — the daemon + monitor loop (state polls, unreachable warnings,
   terminal pipeline)
 
-Hit a jobctl bug? File it straight from the CLI — it bundles the version, log
-tails, the run record, and recent failures, then opens a GitHub issue:
+Hit a jobctl bug? Create a local report from the CLI. It bundles the version,
+log tails, the run record, and recent failures into a Markdown file for you to
+review. jobctl does not upload local logs by default:
 
 ```bash
 jobctl report-bug "monitor marked my running job stuck" --run <run_id>
 ```
 
 Agents can use the top-level shortcut when jobctl behaves unexpectedly and they
-need to file the bug before doing anything else:
+need to record the bug before doing anything else:
 
 ```bash
 jobctl --report-bug "monitor marked my running job stuck" --report-run <run_id>
+```
+
+To upload the report as a GitHub issue, opt in explicitly:
+
+```bash
+jobctl report-bug "monitor marked my running job stuck" --run <run_id> --submit
 ```
 
 Run dirs are mirrored under the configured `run_dir`; `jobctl gc` clears ones

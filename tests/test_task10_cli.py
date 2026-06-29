@@ -160,20 +160,47 @@ class TestReportBugShortcut:
                     "daemon marked a completed run as running",
                     "--report-run",
                     "run-test",
-                    "--report-no-submit",
                 ],
             )
         finally:
             cli_module._OVERRIDE_CLIENT = None
 
         assert result.exit_code == 0, result.output
-        assert "Could not file to GitHub; saved report to" in result.output
+        assert "Saved local bug report for you to review:" in result.output
+        assert "No logs were uploaded by jobctl." in result.output
 
         reports = list((home / "issues").glob("bug-*.md"))
         assert len(reports) == 1
         body = reports[0].read_text()
         assert "daemon marked a completed run as running" in body
-        assert "Filed via `jobctl report-bug`" in body
+        assert "Generated locally via `jobctl report-bug`" in body
+
+    def test_report_bug_json_defaults_to_local_only(self, tmp_path, monkeypatch):
+        from jobctl.cli import main as cli_module
+        from jobctl.cli.main import app
+
+        home = tmp_path / "jobctl-home"
+        monkeypatch.setenv("JOBCTL_HOME", str(home))
+
+        class BrokenClient:
+            def list_runs(self):
+                raise RuntimeError("daemon unavailable")
+
+        cli_module._OVERRIDE_CLIENT = BrokenClient()
+        try:
+            result = CliRunner().invoke(
+                app,
+                ["report-bug", "daemon state mismatch", "--json"],
+            )
+        finally:
+            cli_module._OVERRIDE_CLIENT = None
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output.splitlines()[-1])
+        assert data["submitted"] is False
+        assert data["local_only"] is True
+        assert "did not upload logs" in data["privacy"]
+        assert Path(data["saved_to"]).exists()
 
 
 class TestCliApiErrors:

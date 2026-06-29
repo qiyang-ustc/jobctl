@@ -75,11 +75,13 @@ Relevant files usually include:
 
 ## Bug Reporting Contract
 
-When jobctl itself behaves unexpectedly, file a diagnostic bug report after
-checking `~/.jobctl/cli.log` and `~/.jobctl/daemon.log`. This is required for
-state mismatches, false stuck/running/completed states, missing observation
+When jobctl itself behaves unexpectedly, create a local diagnostic bug report
+after checking `~/.jobctl/cli.log` and `~/.jobctl/daemon.log`. This is required
+for state mismatches, false stuck/running/completed states, missing observation
 cards, crashes, broken JSON output, UI/API visibility mismatches, or sandbox
-state-root failures.
+state-root failures. Reports include local log tails, so the default is a local
+Markdown file for the current user to review; do not upload it unless the user
+explicitly asks for `--submit`.
 
 Use the top-level shortcut:
 
@@ -93,9 +95,10 @@ The subcommand form is equivalent:
 jobctl report-bug "<what went wrong>" --run <run_id>
 ```
 
-Omit the run flag when no run id exists. If you directly fix and merge the
-jobctl bug in the same turn, report the PR or commit instead of filing a
-separate issue.
+Omit the run flag when no run id exists. Add `--submit` only when the user
+explicitly wants a GitHub issue created from those diagnostics. If you directly
+fix and merge the jobctl bug in the same turn, report the PR or commit instead
+of filing a separate issue.
 
 ## Default Scheduling Policy
 

@@ -22,7 +22,8 @@ def test_build_report_includes_description_version_and_run(tmp_path):
     assert "run-abc" in body
     assert "ready" in body          # daemon.log tail
     assert "invoke: run x" in body  # cli.log tail
-    assert "Filed via `jobctl report-bug`" in body
+    assert "Generated locally via `jobctl report-bug`" in body
+    assert "for the current user to review" in body
 
 
 def test_submit_issue_uses_injected_runner_and_returns_url():

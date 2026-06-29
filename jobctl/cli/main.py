@@ -149,9 +149,9 @@ def _main(
         bool,
         typer.Option(
             "--report-submit/--report-no-submit",
-            help="File a GitHub issue for --report-bug",
+            help="Explicitly upload the bug report as a GitHub issue",
         ),
-    ] = True,
+    ] = False,
 ):
     """Log every jobctl invocation so all calls leave a trail in ~/.jobctl/cli.log."""
     # Skip the heavy log setup for `serve` (it configures its own 'daemon' log).
@@ -675,10 +675,10 @@ def _handle_report_bug(
     description: str,
     *,
     run_id: str | None = None,
-    submit: bool = True,
+    submit: bool = False,
     json_out: bool = False,
 ) -> None:
-    """Bundle and submit diagnostics for a jobctl bug."""
+    """Bundle diagnostics for a jobctl bug; upload only on explicit opt-in."""
     from jobctl import report as _report
 
     try:
@@ -704,12 +704,18 @@ def _handle_report_bug(
 
     url = _report.submit_issue(title, body) if submit else None
     if url:
-        result = {"submitted": True, "issue_url": url}
+        result = {
+            "submitted": True,
+            "issue_url": url,
+            "local_logs_uploaded": True,
+        }
     else:
         path = _report.save_local_report(title, body)
         result = {
             "submitted": False,
             "saved_to": str(path),
+            "local_only": True,
+            "privacy": "Saved locally for the current user to review; jobctl did not upload logs.",
             "manual": f"gh issue create --repo {_report.REPO} --title {title!r} --body-file {path}",
         }
 
@@ -718,20 +724,26 @@ def _handle_report_bug(
     elif url:
         typer.echo(f"Filed issue: {url}")
     else:
-        typer.echo(f"Could not file to GitHub; saved report to {result['saved_to']}")
-        typer.echo(f"  file it manually: {result['manual']}")
+        if submit:
+            typer.echo(f"Could not file to GitHub; saved local report to {result['saved_to']}")
+        else:
+            typer.echo(f"Saved local bug report for you to review: {result['saved_to']}")
+        typer.echo("No logs were uploaded by jobctl.")
+        typer.echo(f"  to share it yourself: {result['manual']}")
 
 
 @app.command(name="report-bug")
 def report_bug(
     description: Annotated[str, typer.Argument(help="What went wrong, in one line")],
     run_id: Annotated[Optional[str], typer.Option("--run", help="Related run id")] = None,
-    submit: Annotated[bool, typer.Option("--submit/--no-submit", help="File a GitHub issue")] = True,
+    submit: Annotated[bool, typer.Option("--submit/--no-submit", help="Explicitly upload as a GitHub issue")] = False,
     json_out: Annotated[bool, typer.Option("--json", help="Output JSON")] = False,
 ):
-    """Report a jobctl bug: bundles diagnostics (version, log tails, the run
-    record, recent failures) and opens a GitHub issue on the jobctl repo so the
-    maintainer can fix it. Falls back to a local file if GitHub is unreachable."""
+    """Report a jobctl bug: save diagnostics locally for the current user.
+
+    The report includes version, log tails, the run record, and recent failures.
+    It is uploaded to GitHub only when --submit is explicitly passed.
+    """
     _handle_report_bug(description, run_id=run_id, submit=submit, json_out=json_out)
 
 
