@@ -1053,6 +1053,37 @@ class TestReachabilityAndReconcile:
         assert stored.state == State.RUNNING          # NOT stuck / NOT failed
         assert stored.health == Health.NO_HEARTBEAT
 
+    def test_terminal_poll_clears_stale_no_heartbeat_health(self, tmp_path):
+        store = _make_store(tmp_path)
+        jf = _make_jobfile(tmp_path)
+        store.add_jobfile(jf)
+        run = _make_run(jf, workdir=str(tmp_path), state=State.RUNNING)
+        run.health = Health.NO_HEARTBEAT
+        run.started_at = _now_iso()
+        run.last_heartbeat = "2020-01-01T00:00:00+00:00"
+        store.add_run(run)
+        stdout = tmp_path / "stdout.txt"
+        stderr = tmp_path / "stderr.txt"
+        stdout.write_text("done\n")
+        stderr.write_text("")
+
+        backend = FakeBackend(
+            poll_sequence=[PollResult(state=State.COMPLETED, resource={}, reachable=True)],
+            collect_result=CollectResult(
+                exit_code=0,
+                stdout_path=str(stdout),
+                stderr_path=str(stderr),
+                artifact_dir=str(tmp_path),
+            ),
+        )
+        asyncio.run(self._monitor(store, backend, run).poll_runs())
+
+        stored = store.get_run(run.run_id)
+        assert stored.state == State.COMPLETED
+        assert stored.health == Health.OK
+        assert stored.observation_card["health"] == "ok"
+        assert "silently died" not in stored.observation_card["interpretation"]
+
     def test_running_without_local_log_is_not_stuck(self, tmp_path):
         # SLURM-style: running a long time with no local stdout mirror -> NOT stuck
         store = _make_store(tmp_path)

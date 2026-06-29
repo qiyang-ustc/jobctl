@@ -591,6 +591,10 @@ class Monitor:
         key_evidence: list[str] = []
         per_crit: list[dict] = []
         health = run.health if isinstance(run.health, Health) else Health.OK
+        if health == Health.NO_HEARTBEAT:
+            # A reachable terminal poll proves the job did not silently vanish;
+            # keep no_heartbeat as a transient connectivity warning only.
+            health = Health.OK
 
         if run.state == State.STUCK:
             match = Match.INCONCLUSIVE
