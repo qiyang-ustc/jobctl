@@ -450,6 +450,23 @@ class TestCancelRerun:
         run = app_client.get(f"/runs/{run_id}").json()
         assert run["state"] == "cancelled"
 
+    def test_cancel_records_agent_owned_validation_reason(self, app_client, sample_jobfile_yaml):
+        _, run_id = self._register_and_submit(app_client, sample_jobfile_yaml)
+        resp = app_client.post(
+            f"/runs/{run_id}/cancel",
+            json={
+                "reason": "line-search validation no longer needed",
+                "agent_owned_validation": True,
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["state"] == "cancelled"
+        assert data["cancel_reason"] == "line-search validation no longer needed"
+        assert data["agent_owned_validation_cancel"] is True
+        assert "agent-owned-validation-cancel" in data["tags"]
+        assert "line-search validation no longer needed" in data["note"]
+
     def test_cancel_nonexistent(self, app_client):
         resp = app_client.post("/runs/nonexistent/cancel")
         assert resp.status_code == 404

@@ -614,16 +614,37 @@ def inspect(
 @app.command()
 def cancel(
     run_id: Annotated[str, typer.Argument(help="Run ID")],
+    reason: Annotated[
+        Optional[str],
+        typer.Option("--reason", help="Human-readable cancellation reason"),
+    ] = None,
+    agent_owned_validation: Annotated[
+        bool,
+        typer.Option(
+            "--agent-owned-validation",
+            help=(
+                "Mark this as cleanup of a jobctl-managed validation/smoke run "
+                "submitted by this agent"
+            ),
+        ),
+    ] = False,
     json_out: Annotated[bool, typer.Option("--json", help="Output JSON")] = False,
 ):
     """Cancel a run."""
     client = _get_client()
-    result = client.cancel(run_id)
+    if agent_owned_validation and not reason:
+        reason = "agent cleanup of a jobctl-managed validation/smoke run"
+    result = client.cancel(
+        run_id,
+        reason=reason,
+        agent_owned_validation=agent_owned_validation,
+    )
 
     if json_out:
         _print_json(result)
     else:
-        typer.echo(f"Cancelled run {run_id} (state: {result.get('state')})")
+        suffix = f"; reason: {reason}" if reason else ""
+        typer.echo(f"Cancelled run {run_id} (state: {result.get('state')}){suffix}")
 
 
 # ---------------------------------------------------------------------------

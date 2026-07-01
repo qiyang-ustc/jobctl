@@ -204,8 +204,19 @@ class ApiClient:
         self._raise_for(resp, "list_runs")
         return resp.json()
 
-    def cancel(self, run_id: str) -> dict:
-        resp = self._post(f"/runs/{run_id}/cancel")
+    def cancel(
+        self,
+        run_id: str,
+        *,
+        reason: str | None = None,
+        agent_owned_validation: bool = False,
+    ) -> dict:
+        body: dict[str, Any] = {}
+        if reason:
+            body["reason"] = reason
+        if agent_owned_validation:
+            body["agent_owned_validation"] = True
+        resp = self._post(f"/runs/{run_id}/cancel", json=body or None)
         self._raise_for(resp, f"cancel:{run_id}")
         return resp.json()
 

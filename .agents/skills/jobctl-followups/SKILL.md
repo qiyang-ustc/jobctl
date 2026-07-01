@@ -100,6 +100,21 @@ explicitly wants a GitHub issue created from those diagnostics. If you directly
 fix and merge the jobctl bug in the same turn, report the PR or commit instead
 of filing a separate issue.
 
+## Agent-Owned Validation Cancellation
+
+The user authorizes agents to cancel jobctl-managed validation, smoke, or pilot
+runs that the same agent submitted in the current task when those runs are no
+longer useful, are blocking cleanup, or were superseded by a code fix. Use an
+auditable command:
+
+```bash
+jobctl cancel <run_id> --agent-owned-validation --reason "<why>" --json
+```
+
+Do not cancel production runs, user-submitted runs, scheduler-only jobs, or runs
+with unclear ownership without asking the user first. Prefer `inspect` or
+`running --json` first when ownership is not obvious from title/tags/params.
+
 ## Default Scheduling Policy
 
 Add a user-config-level default policy rather than hardcoding one-off server

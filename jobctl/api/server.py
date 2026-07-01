@@ -575,6 +575,16 @@ def _register_routes(app: FastAPI) -> None:
         store = _store(request)
         cfg = _config(request)
         monitor = _monitor(request)
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                body = {}
+        except Exception:
+            body = {}
+        reason = str(body.get("reason") or "").strip()
+        agent_owned_validation = bool(body.get("agent_owned_validation"))
+        if agent_owned_validation and not reason:
+            reason = "agent cleanup of a jobctl-managed validation/smoke run"
 
         run = store.get_run(run_id)
         if run is None:
@@ -590,9 +600,29 @@ def _register_routes(app: FastAPI) -> None:
         except Exception as exc:
             logger.warning("cancel_run: backend cancel failed: %s", exc)
 
-        store.update_run(run_id, state=State.CANCELLED)
+        updates: dict[str, Any] = {"state": State.CANCELLED}
+        if reason:
+            prefix = "Agent-owned validation cancel" if agent_owned_validation else "Cancel"
+            cancel_note = f"{prefix}: {reason}"
+            if run.note:
+                updates["note"] = (
+                    run.note if cancel_note in run.note else f"{run.note}\n{cancel_note}"
+                )
+            else:
+                updates["note"] = cancel_note
+        if agent_owned_validation:
+            tags = list(run.tags or [])
+            if "agent-owned-validation-cancel" not in tags:
+                tags.append("agent-owned-validation-cancel")
+            updates["tags"] = tags
+        store.update_run(run_id, **updates)
         run = store.get_run(run_id)
-        return _run_dict_with_name(store, run)
+        result = _run_dict_with_name(store, run)
+        if reason:
+            result["cancel_reason"] = reason
+        if agent_owned_validation:
+            result["agent_owned_validation_cancel"] = True
+        return result
 
     @app.post("/runs/{run_id}/rerun")
     async def rerun(run_id: str, request: Request):

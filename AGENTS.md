@@ -34,9 +34,19 @@ Open follow-up requirements:
 When debugging jobctl itself, inspect `~/.jobctl/cli.log` and
 `~/.jobctl/daemon.log` before guessing. If jobctl misreports state, marks a run
 stuck incorrectly, crashes, fails to persist the terminal observation card, or
-otherwise behaves differently from the documented contract, agents must file a
-bug report with diagnostics instead of only mentioning it in chat:
+otherwise behaves differently from the documented contract, agents must create
+a local bug report with diagnostics instead of only mentioning it in chat:
 `jobctl --report-bug "<what went wrong>" --report-run <run_id>`. The subcommand
 form `jobctl report-bug "<what went wrong>" --run <run_id>` is equivalent. If no
-run id exists, omit the run flag. If the agent fixes the bug in the same turn,
-the PR/commit is the tracking record and should be reported explicitly.
+run id exists, omit the run flag. Reports are saved locally for the current user
+to review; use `--submit` only when the user explicitly asks to upload the
+diagnostics. If the agent fixes the bug in the same turn, the PR/commit is the
+tracking record and should be reported explicitly.
+
+The user authorizes agents to cancel jobctl-managed validation, smoke, or pilot
+runs that the same agent submitted in the current task when those runs are no
+longer useful, are blocking cleanup, or were superseded by a code fix. Use
+`jobctl cancel <run_id> --agent-owned-validation --reason "<why>" --json` so
+the reason is recorded in the run. Do not cancel production runs, user-submitted
+runs, scheduler-only jobs, or runs with unclear ownership without asking the
+user first.

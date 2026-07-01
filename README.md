@@ -26,6 +26,7 @@ jobctl status <run_id> --json               # state + health (+ title/tags)
 jobctl inspect <run_id> --json              # persisted observation card + record
 jobctl logs <run_id> --json                 # stdout/stderr tail
 jobctl artifacts <run_id> --json            # indexed artifacts
+jobctl cancel <run_id> --reason "no longer needed" --json
 jobctl memory query --name <job> --json     # has this run before? can I reuse it?
 jobctl servers --json                       # cluster health, queue, capacity, policy
 ```
@@ -39,6 +40,13 @@ GPU SLURM resources are guarded: a JobFile must show accelerator use in the
 actual command or resolved parameters, such as CUDA, ROCm/HIP, `nvidia-smi`, or
 `--device cuda`. A CPU-looking JobFile that requests `--gres` or a GPU partition
 is rejected before submission instead of consuming accelerator nodes.
+
+Agents are allowed to cancel validation, smoke, or pilot runs that they
+submitted in the current task once those runs are no longer needed. Use an
+auditable command such as
+`jobctl cancel <run_id> --agent-owned-validation --reason "<why>" --json`.
+Do not cancel production runs, user-submitted runs, scheduler-only jobs, or runs
+with unclear ownership without explicit user confirmation.
 
 ## Dashboard
 

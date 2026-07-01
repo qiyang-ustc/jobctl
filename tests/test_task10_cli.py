@@ -524,6 +524,28 @@ class TestCancelCommand:
         data = json.loads(result.output)
         assert data["state"] == "cancelled"
 
+    def test_cancel_json_records_agent_owned_validation_reason(self, cli_env):
+        runner, app, ac, http_client, jf_id = cli_env
+        run = ac.submit(jobfile_id=jf_id, params={})
+        run_id = run["run_id"]
+        result = runner.invoke(
+            app,
+            [
+                "cancel",
+                "--json",
+                "--agent-owned-validation",
+                "--reason",
+                "line-search validation no longer needed",
+                run_id,
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["state"] == "cancelled"
+        assert data["cancel_reason"] == "line-search validation no longer needed"
+        assert data["agent_owned_validation_cancel"] is True
+        assert "agent-owned-validation-cancel" in data["tags"]
+
     def test_cancel_no_json(self, cli_env):
         runner, app, ac, http_client, jf_id = cli_env
         run = ac.submit(jobfile_id=jf_id, params={})
